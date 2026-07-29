@@ -164,6 +164,17 @@ async def stats(interaction: discord.Interaction, player: discord.Member = None)
     await interaction.response.send_message(embeds=embeds)
 
 
+@bot.tree.command(name="play-style", description="Show a player's play style radar chart (Attack/Defense/Aggression/Consistency)")
+@app_commands.describe(player="Player to look up (defaults to you)")
+async def play_style(interaction: discord.Interaction, player: discord.Member = None):
+    member = player or interaction.user
+    await interaction.response.defer()
+    results = await game_actions.build_playstyle_results(str(member.id), member.display_name)
+    embeds = [r[0] for r in results]
+    files = [discord.File(r[1][1], filename=r[1][0]) for r in results if r[1] is not None]
+    await interaction.followup.send(embeds=embeds, files=files)
+
+
 @bot.tree.command(name="head-to-head", description="Compare two players' record against each other")
 @app_commands.describe(player_a="First player", player_b="Second player")
 async def head_to_head(interaction: discord.Interaction, player_a: discord.Member, player_b: discord.Member):

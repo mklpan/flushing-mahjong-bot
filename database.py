@@ -418,6 +418,7 @@ def _compute_player_breakdown(games, player_id):
     'fed by' / 'fed to' spans discard, self-draw, AND false-win hands."""
     wins = 0
     draws = 0
+    total_win_points = 0
     false_wins = 0
     wins_by_type = {"discard": 0, "self_draw": 0}
     losses_by_type = {"discard": 0, "self_draw": 0}
@@ -455,6 +456,7 @@ def _compute_player_breakdown(games, player_id):
             if is_winner:
                 wins += 1
                 biggest_win = max(biggest_win, my_points)
+                total_win_points += my_points
                 if g["faan"] is not None:
                     faan_dist_wins[g["faan"]] = faan_dist_wins.get(g["faan"], 0) + 1
                 wins_by_type["discard" if g["win_type"] == "discard" else "self_draw"] += 1
@@ -500,6 +502,7 @@ def _compute_player_breakdown(games, player_id):
         "avg_per_hand": avg_per_hand,
         "total_points": total_points,
         "biggest_win": biggest_win,
+        "total_win_points": total_win_points,
         "biggest_loss": biggest_loss,
         "net_discard_given": net_discard_given,
         "wins_by_type": wins_by_type,

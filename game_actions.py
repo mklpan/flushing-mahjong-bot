@@ -5,12 +5,19 @@ live in exactly one place.
 """
 
 import datetime
+import io
 import discord
+
+import matplotlib
+matplotlib.use("Agg")  # headless -- no display available on the server
+import matplotlib.pyplot as plt
+import numpy as np
 
 import database as db
 import scoring
 
 CLUB_NAME = "Flushing Mahjong League"
+PLAYSTYLE_MIN_HANDS = 20
 
 WIN_TYPE_LABELS = {
     "discard": "Discard",
@@ -557,6 +564,97 @@ async def build_head_to_head_embeds(id_a, name_a, id_b, name_b):
         await _build_single_h2h_embed(id_a, name_a, id_b, name_b, season_id, season_label),
         await _build_single_h2h_embed(id_a, name_a, id_b, name_b, None, "Lifetime"),
     ]
+
+
+def _compute_playstyle_scores(stats):
+    hands = stats.get("hands", 0)
+    wins = stats.get("wins", 0)
+
+    if wins:
+        total_faan_weight = sum(f * c for f, c in stats["faan_dist_wins"])
+        win_count_check = sum(c for _, c in stats["faan_dist_wins"])
+        avg_faan = (total_faan_weight / win_count_check) if win_count_check else 0
+        avg_win_points = stats["total_win_points"] / wins
+    else:
+        avg_faan = 0
+        avg_win_points = 0
+
+    discard_losses = stats["losses_by_type"]["discard"]
+    defense = (1 - (discard_losses / hands)) * 100 if hands else 0
+    attack = min(100, avg_win_points)  # capped at 100 pts/win
+    aggression = max(0, min(100, (avg_faan - 3) / (13 - 3) * 100)) if avg_faan else 0
+    consistency = (wins / hands * 100) if hands else 0
+
+    return {"attack": attack, "defense": defense, "aggression": aggression, "consistency": consistency}
+
+
+def _render_playstyle_chart(display_name, scope_label, scores):
+    labels = ["Attack", "Defense", "Aggression", "Consistency"]
+    values = [scores["attack"], scores["defense"], scores["aggression"], scores["consistency"]]
+
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    values_closed = values + values[:1]
+    angles_closed = angles + angles[:1]
+
+    fig, ax = plt.subplots(figsize=(4, 4), subplot_kw=dict(polar=True))
+    ax.set_facecolor("#faf6ee")
+    fig.patch.set_facecolor("#faf6ee")
+
+    ax.plot(angles_closed, values_closed, color="#5b8fd6", linewidth=2)
+    ax.fill(angles_closed, values_closed, color="#5b8fd6", alpha=0.4)
+
+    ax.set_xticks(angles)
+    ax.set_xticklabels(labels, fontsize=11, color="#444444")
+    ax.set_ylim(0, 100)
+    ax.set_yticks([25, 50, 75, 100])
+    ax.set_yticklabels([])
+    ax.grid(color="#dddddd")
+    ax.spines["polar"].set_visible(False)
+
+    plt.title(f"Play Style — {display_name}\n{scope_label}", fontsize=12, color="#333333", pad=20)
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=150, facecolor=fig.get_facecolor())
+    plt.close(fig)  # release matplotlib's internal figure state -- avoids a memory leak across repeated calls
+    buf.seek(0)
+    return buf
+
+
+async def build_playstyle_results(discord_id: str, display_name: str):
+    """Returns a list of (embed, file_tuple_or_None) pairs -- one per scope
+    (current season, lifetime). file_tuple is (filename, BytesIO) when that
+    scope has enough hands to show a chart, else None."""
+    season = await db.get_active_season()
+    scopes = []
+    if season:
+        scopes.append((f"Season {season['number']} ({season['name']})", season["id"]))
+    scopes.append(("Lifetime", None))
+
+    results = []
+    for label, season_id in scopes:
+        stats = await db.get_player_full_stats(discord_id, season_id)
+        hands = stats.get("hands", 0) if stats else 0
+
+        embed = discord.Embed(title=f"🎯 Play Style — {display_name}", color=discord.Color.blue())
+        embed.set_author(name=label)
+
+        if hands < PLAYSTYLE_MIN_HANDS:
+            embed.description = f"Needs at least {PLAYSTYLE_MIN_HANDS} hands to show ({hands}/{PLAYSTYLE_MIN_HANDS} so far)."
+            results.append((embed, None))
+            continue
+
+        scores = _compute_playstyle_scores(stats)
+        buf = _render_playstyle_chart(display_name, label, scores)
+        filename = f"playstyle_{discord_id}_{season_id or 'lifetime'}.png"
+        embed.set_image(url=f"attachment://{filename}")
+        embed.add_field(name="Attack", value=f"{scores['attack']:.0f}", inline=True)
+        embed.add_field(name="Defense", value=f"{scores['defense']:.0f}", inline=True)
+        embed.add_field(name="Aggression", value=f"{scores['aggression']:.0f}", inline=True)
+        embed.add_field(name="Consistency", value=f"{scores['consistency']:.0f}", inline=True)
+        results.append((embed, (filename, buf)))
+
+    return results
 
 
 async def update_live_leaderboard(client: discord.Client):

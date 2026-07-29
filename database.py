@@ -9,9 +9,14 @@ Schema:
 """
 
 import aiosqlite
+import os
 import time
 
-DB_PATH = "mahjong.db"
+# Defaults to a local file for local testing. On Railway, set the
+# DB_DIR environment variable to your mounted volume path (e.g. /app/data)
+# so the database survives redeploys.
+DB_DIR = os.getenv("DB_DIR", ".")
+DB_PATH = os.path.join(DB_DIR, "mahjong.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS players (

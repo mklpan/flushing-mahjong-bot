@@ -856,39 +856,72 @@ async def get_player_game_history(discord_id: str, season_id: int, limit: int = 
             return await cur.fetchall()
 
 
-async def get_shared_games(discord_id_a: str, discord_id_b: str, season_id: int = None):
-    """Games where BOTH players were seated together. Returns
-    {games_together, wins_a, wins_b} scoped to a season if given, or
-    lifetime if season_id is None."""
+def _feeding_amount(scores, winner_id, payer_id):
+    """Points specifically paid by payer_id toward winner_id's gain in this
+    one hand, or 0 if payer_id wasn't a direct contributor to that win.
+    scores: list of (player_id, display_name, points) for all 4 seats."""
+    mine_winner = next((s[2] for s in scores if s[0] == winner_id), None)
+    if mine_winner is None or mine_winner <= 0:
+        return 0
+    positives = [s for s in scores if s[2] > 0]
+    negatives = [s for s in scores if s[2] < 0]
+    if len(positives) == 1:
+        p = next((s for s in negatives if s[0] == payer_id), None)
+        return -p[2] if p else 0
+    elif len(negatives) == 1:
+        return mine_winner if negatives[0][0] == payer_id else 0
+    return 0
+
+
+async def get_head_to_head_detail(discord_id_a: str, discord_id_b: str, season_id: int = None):
+    """Everything needed for a rich /head-to-head card, scoped to a season
+    if given, or lifetime if season_id is None."""
+    empty = {
+        "games_together": 0, "draws_together": 0, "wins_a": 0, "wins_b": 0,
+        "points_a_from_b": 0, "points_b_from_a": 0, "times_a_fed_b": 0, "times_b_fed_a": 0,
+        "biggest_win_a": 0, "biggest_win_b": 0,
+    }
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT id FROM players WHERE discord_id = ?", (discord_id_a,)) as cur:
             row_a = await cur.fetchone()
         async with db.execute("SELECT id FROM players WHERE discord_id = ?", (discord_id_b,)) as cur:
             row_b = await cur.fetchone()
         if not row_a or not row_b:
-            return {"games_together": 0, "wins_a": 0, "wins_b": 0}
+            return empty
         player_id_a, player_id_b = row_a[0], row_b[0]
 
-        season_clause = "AND g.season_id = ?" if season_id is not None else ""
-        params = [player_id_a, player_id_b] + ([season_id] if season_id is not None else [])
+        games_a = await _fetch_scoped_games_for_player(db, player_id_a, season_id)
+        shared = [g for g in games_a if any(s[0] == player_id_b for s in g["scores"])]
 
-        async with db.execute(
-            f"""
-            SELECT g.winner_id
-            FROM games g
-            WHERE g.id IN (SELECT game_id FROM game_scores WHERE player_id = ?)
-              AND g.id IN (SELECT game_id FROM game_scores WHERE player_id = ?)
-              {season_clause}
-            """,
-            params,
-        ) as cur:
-            winner_ids = [r[0] for r in await cur.fetchall()]
+        result = dict(empty)
+        result["games_together"] = len(shared)
 
-        return {
-            "games_together": len(winner_ids),
-            "wins_a": sum(1 for w in winner_ids if w == player_id_a),
-            "wins_b": sum(1 for w in winner_ids if w == player_id_b),
-        }
+        for g in shared:
+            if g["win_type"] == "draw":
+                result["draws_together"] += 1
+                continue
+
+            mine_a = next(s[2] for s in g["scores"] if s[0] == player_id_a)
+            mine_b = next(s[2] for s in g["scores"] if s[0] == player_id_b)
+
+            if g["winner_id"] == player_id_a:
+                result["wins_a"] += 1
+                result["biggest_win_a"] = max(result["biggest_win_a"], mine_a)
+            if g["winner_id"] == player_id_b:
+                result["wins_b"] += 1
+                result["biggest_win_b"] = max(result["biggest_win_b"], mine_b)
+
+            amt_b_from_a = _feeding_amount(g["scores"], player_id_b, player_id_a)
+            if amt_b_from_a:
+                result["points_b_from_a"] += amt_b_from_a
+                result["times_a_fed_b"] += 1
+
+            amt_a_from_b = _feeding_amount(g["scores"], player_id_a, player_id_b)
+            if amt_a_from_b:
+                result["points_a_from_b"] += amt_a_from_b
+                result["times_b_fed_a"] += 1
+
+        return result
 
 
 async def export_rows():

@@ -507,25 +507,42 @@ async def build_player_history_embed(discord_id: str, display_name: str, limit: 
 
 
 async def _build_single_h2h_embed(id_a, name_a, id_b, name_b, season_id, scope_label):
-    shared = await db.get_shared_games(id_a, id_b, season_id)
+    d = await db.get_head_to_head_detail(id_a, id_b, season_id)
     embed = discord.Embed(title=f"⚔️ {name_a} vs {name_b}", color=discord.Color.blue())
     embed.set_author(name=scope_label)
 
-    if shared["games_together"] == 0:
+    if d["games_together"] == 0:
         embed.description = "They haven't been seated in a hand together yet in this scope."
         return embed
 
-    stats_a = await db.get_player_full_stats(id_a, season_id)
-    stats_b = await db.get_player_full_stats(id_b, season_id)
-    a_fed_by_b = stats_a["fed_by_all"].get(name_b, 0) if stats_a else 0
-    b_fed_by_a = stats_b["fed_by_all"].get(name_a, 0) if stats_b else 0
+    net_a = d["points_a_from_b"] - d["points_b_from_a"]
+    sign = "+" if net_a >= 0 else ""
+    lead = f"{name_a} leads" if net_a > 0 else (f"{name_b} leads" if net_a < 0 else "Dead even")
+    embed.description = f"**{lead}** · net {sign}{net_a} pts"
 
-    embed.add_field(name="Hands together", value=str(shared["games_together"]), inline=True)
-    embed.add_field(name=f"{name_a} wins", value=str(shared["wins_a"]), inline=True)
-    embed.add_field(name=f"{name_b} wins", value=str(shared["wins_b"]), inline=True)
+    draws_part = f" ({d['draws_together']} draws)" if d["draws_together"] else ""
+    embed.add_field(name="Hands together", value=f"{d['games_together']}{draws_part}", inline=True)
 
-    embed.add_field(name=f"{name_a} won directly off {name_b}", value=f"{a_fed_by_b} pts", inline=True)
-    embed.add_field(name=f"{name_b} won directly off {name_a}", value=f"{b_fed_by_a} pts", inline=True)
+    decisive = d["games_together"] - d["draws_together"]
+    rate_a = round(d["wins_a"] / decisive * 100) if decisive else 0
+    rate_b = round(d["wins_b"] / decisive * 100) if decisive else 0
+    embed.add_field(name=f"{name_a} wins", value=f"{d['wins_a']} ({rate_a}%)", inline=True)
+    embed.add_field(name=f"{name_b} wins", value=f"{d['wins_b']} ({rate_b}%)", inline=True)
+
+    embed.add_field(
+        name=f"{name_a} won directly off {name_b}",
+        value=f"{d['points_a_from_b']} pts ({d['times_b_fed_a']}x)",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"{name_b} won directly off {name_a}",
+        value=f"{d['points_b_from_a']} pts ({d['times_a_fed_b']}x)",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer for 3-col layout
+
+    embed.add_field(name=f"{name_a}'s biggest hand vs {name_b}", value=f"+{d['biggest_win_a']}", inline=True)
+    embed.add_field(name=f"{name_b}'s biggest hand vs {name_a}", value=f"+{d['biggest_win_b']}", inline=True)
 
     return embed
 

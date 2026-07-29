@@ -188,6 +188,17 @@ async def update_season_dates(season_id: int, start_date: str, end_date: str):
         await db.commit()
 
 
+async def update_season_info(season_id: int, name: str, season_number: int, start_date: str, end_date: str):
+    """Edits the current season's name/number/date-lock in place (does NOT
+    create a new season or touch which games belong to it)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE seasons SET name = ?, season_number = ?, start_date = ?, end_date = ? WHERE id = ?",
+            (name, season_number, start_date, end_date, season_id),
+        )
+        await db.commit()
+
+
 async def get_or_create_player(discord_id: str, display_name: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(

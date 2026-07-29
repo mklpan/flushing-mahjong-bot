@@ -19,6 +19,13 @@ WIN_TYPE_LABELS = {
     "draw": "Draw",
 }
 
+EMBED_COLORS = {
+    "discard": discord.Color.green(),
+    "self_draw": discord.Color.green(),
+    "false_win": discord.Color.red(),
+    "draw": discord.Color.yellow(),
+}
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -33,6 +40,7 @@ async def perform_log_game(
     false_win_caller=None,
     notes: str = None,
     logged_by_id: str = None,
+    logged_by_name: str = None,
     game_date: str = None,
 ):
     """seated: list of 4 discord.Member (or User) objects.
@@ -157,7 +165,7 @@ async def perform_log_game(
         deltas={m: deltas[player_ids[m.id]] for m in seated},
         winner=resolved_winner,
         discarder=discarder if win_type == "discard" else None,
-        logged_by_name=logged_by_id,
+        logged_by_name=logged_by_name or logged_by_id or "unknown",
         notes=notes,
     )
 
@@ -174,6 +182,7 @@ async def perform_edit_game(
     false_win_caller=None,
     notes: str = None,
     game_date: str = None,
+    edited_by_name: str = None,
 ):
     """Same validation as perform_log_game, but overwrites an existing
     game in place instead of creating a new one. Does not re-check season
@@ -263,7 +272,7 @@ async def perform_edit_game(
         deltas={m: deltas[player_ids[m.id]] for m in seated},
         winner=resolved_winner,
         discarder=discarder if win_type == "discard" else None,
-        logged_by_name="(edited)",
+        logged_by_name=f"{edited_by_name} (edited)" if edited_by_name else "(edited)",
         notes=notes,
     )
     embed.title = f"✏️ Edited H{game_id}"
@@ -277,7 +286,7 @@ def build_logged_game_embed(
     """Matches the club's 'Logged H###' card format."""
     embed = discord.Embed(
         title=f"🀄 Logged H{game_id}",
-        color=discord.Color.green(),
+        color=EMBED_COLORS.get(win_type, discord.Color.green()),
     )
 
     if winner is not None:

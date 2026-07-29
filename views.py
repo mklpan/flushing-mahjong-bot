@@ -266,11 +266,14 @@ class NextButton(discord.ui.Button):
                 result = await game_actions.perform_edit_game(
                     game_id=v.edit_game_id, seated=v.seated, win_type="draw",
                     notes=v.notes, game_date=v.game_date,
+                    edited_by_name=interaction.user.display_name,
                 )
             else:
                 result = await game_actions.perform_log_game(
                     seated=v.seated, win_type="draw", notes=v.notes,
-                    logged_by_id=str(interaction.user.id), game_date=v.game_date,
+                    logged_by_id=str(interaction.user.id),
+                    logged_by_name=interaction.user.display_name,
+                    game_date=v.game_date,
                 )
             await _finish_log_flow(interaction, result)
             return
@@ -415,9 +418,15 @@ class RoleSubmitButton(discord.ui.Button):
         )
 
         if p.edit_game_id:
-            result = await game_actions.perform_edit_game(game_id=p.edit_game_id, **common_kwargs)
+            result = await game_actions.perform_edit_game(
+                game_id=p.edit_game_id, edited_by_name=interaction.user.display_name, **common_kwargs
+            )
         else:
-            result = await game_actions.perform_log_game(logged_by_id=str(interaction.user.id), **common_kwargs)
+            result = await game_actions.perform_log_game(
+                logged_by_id=str(interaction.user.id),
+                logged_by_name=interaction.user.display_name,
+                **common_kwargs,
+            )
 
         await _finish_log_flow(interaction, result)
 
@@ -620,11 +629,31 @@ class NewSeasonModal(discord.ui.Modal, title="Start a New Season"):
         await interaction.response.send_message(f"🎉 New season started: **{name}**.{posted_note}", ephemeral=True)
 
 
-class SeasonDatesModal(discord.ui.Modal, title="Update Current Season's Date Lock"):
+class EditSeasonModal(discord.ui.Modal, title="Edit Current Season"):
+    name_input = discord.ui.TextInput(label="Season name (e.g. Fall 2026)", max_length=50)
+    number_input = discord.ui.TextInput(label="Season #", max_length=5)
     start_date_input = discord.ui.TextInput(label="Start date YYYY-MM-DD (blank = no lock)", required=False, max_length=10)
     end_date_input = discord.ui.TextInput(label="End date YYYY-MM-DD (blank = no lock)", required=False, max_length=10)
 
+    def __init__(self, season: dict):
+        super().__init__()
+        self.season = season
+        self.name_input.default = season["name"]
+        self.number_input.default = str(season["number"]) if season["number"] is not None else ""
+        self.start_date_input.default = season["start_date"] or ""
+        self.end_date_input.default = season["end_date"] or ""
+
     async def on_submit(self, interaction: discord.Interaction):
+        name = self.name_input.value.strip()
+        if not name:
+            await interaction.response.send_message("Season name can't be empty.", ephemeral=True)
+            return
+
+        if not self.number_input.value.strip().isdigit():
+            await interaction.response.send_message("Season # must be a number.", ephemeral=True)
+            return
+        number = int(self.number_input.value.strip())
+
         for label, val in (("start date", self.start_date_input.value), ("end date", self.end_date_input.value)):
             if val.strip():
                 try:
@@ -633,18 +662,15 @@ class SeasonDatesModal(discord.ui.Modal, title="Update Current Season's Date Loc
                     await interaction.response.send_message(f"{label.title()} must be YYYY-MM-DD.", ephemeral=True)
                     return
 
-        season = await db.get_active_season()
-        if not season:
-            await interaction.response.send_message("No active season.", ephemeral=True)
-            return
-
         start_date = self.start_date_input.value.strip() or None
         end_date = self.end_date_input.value.strip() or None
-        await db.update_season_dates(season["id"], start_date, end_date)
+
+        await db.update_season_info(self.season["id"], name, number, start_date, end_date)
+        await game_actions.update_live_leaderboard(interaction.client)
 
         lock_desc = "no date lock" if not (start_date or end_date) else f"{start_date or 'open'} → {end_date or 'open'}"
         await interaction.response.send_message(
-            f"📅 **{season['name']}** date lock updated: {lock_desc}", ephemeral=True
+            f"✅ Season updated: **Season {number} ({name})** · {lock_desc}", ephemeral=True
         )
 
 
@@ -731,12 +757,16 @@ class ModToolsView(discord.ui.View):
             return
         await interaction.response.send_modal(NewSeasonModal())
 
-    @discord.ui.button(label="Season Dates", emoji="📅", style=discord.ButtonStyle.secondary, custom_id="mahjong_mod_seasondates", row=2)
+    @discord.ui.button(label="Edit Season", emoji="📅", style=discord.ButtonStyle.secondary, custom_id="mahjong_mod_seasondates", row=2)
     async def season_dates(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not _has_mod_permission(interaction):
             await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
             return
-        await interaction.response.send_modal(SeasonDatesModal())
+        season = await db.get_active_season()
+        if not season:
+            await interaction.response.send_message("No active season.", ephemeral=True)
+            return
+        await interaction.response.send_modal(EditSeasonModal(season))
 
     @discord.ui.button(label="Export CSV", emoji="📊", style=discord.ButtonStyle.success, custom_id="mahjong_mod_export", row=2)
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):

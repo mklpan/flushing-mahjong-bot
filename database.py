@@ -830,6 +830,28 @@ async def get_game_player_ids(game_id: int):
         }
 
 
+async def get_player_game_history(discord_id: str, season_id: int, limit: int = 25):
+    """This player's games within one season, most recent first, with
+    enough detail to describe the outcome from their point of view."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT g.id, g.season_game_number, g.game_date, g.win_type, g.faan,
+                   gs.points,
+                   CASE WHEN g.winner_id = gs.player_id THEN 1 ELSE 0 END AS is_winner,
+                   CASE WHEN g.discarder_id = gs.player_id THEN 1 ELSE 0 END AS is_discarder
+            FROM game_scores gs
+            JOIN games g ON g.id = gs.game_id
+            JOIN players p ON p.id = gs.player_id
+            WHERE p.discord_id = ? AND g.season_id = ?
+            ORDER BY g.timestamp DESC
+            LIMIT ?
+            """,
+            (discord_id, season_id, limit),
+        ) as cur:
+            return await cur.fetchall()
+
+
 async def export_rows():
     """One row per player per game, long format -- suitable for CSV export
     into Power BI / Tableau / Excel. Includes season info for filtering."""

@@ -164,6 +164,14 @@ async def stats(interaction: discord.Interaction, player: discord.Member = None)
     await interaction.response.send_message(embeds=embeds)
 
 
+@bot.tree.command(name="game-history", description="Show a player's game history for the current season")
+@app_commands.describe(player="Player to look up (defaults to you)")
+async def game_history(interaction: discord.Interaction, player: discord.Member = None):
+    member = player or interaction.user
+    embed = await game_actions.build_player_history_embed(str(member.id), member.display_name)
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="recent-games", description="Show the most recently logged games")
 async def recent_games(interaction: discord.Interaction):
     rows = await db.get_recent_games(10)

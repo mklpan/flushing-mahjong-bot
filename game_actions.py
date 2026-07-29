@@ -450,14 +450,55 @@ async def build_hall_of_fame_embed():
             lines.append(f"{header}\n_no games logged_")
         else:
             top10 = rows[:10]
-            entries = []
-            for i, (name, total, hands, wins) in enumerate(top10):
-                rank_marker = HOF_MEDALS[i] if i < 3 else f"#{i+1}"
-                entries.append(f"{rank_marker} {name} — {total} pts")
-            lines.append(header + "\n" + "\n".join(entries))
+            lines.append(header + "\n" + "\n".join(_format_leaderboard_lines(top10)))
     embed.description = "\n\n".join(lines)
     embed.set_footer(text="Updates automatically — a season appears here once it ends")
     embed.timestamp = datetime.datetime.now()
+    return embed
+
+
+async def build_player_history_embed(discord_id: str, display_name: str, limit: int = 25):
+    """This player's game history for the CURRENT season only."""
+    season = await db.get_active_season()
+    embed = discord.Embed(title=f"📜 Game History — {display_name}", color=discord.Color.blue())
+
+    if not season:
+        embed.description = "No active season."
+        return embed
+
+    embed.set_author(name=f"Season {season['number']} ({season['name']})")
+
+    rows = await db.get_player_game_history(discord_id, season["id"], limit)
+    if not rows:
+        embed.description = "No games logged yet this season."
+        return embed
+
+    lines = []
+    for game_id, season_game_number, game_date, win_type, faan, points, is_winner, is_discarder in rows:
+        hand_ref = f"H{season_game_number}" if season_game_number is not None else f"H{game_id}"
+        sign = "+" if points >= 0 else ""
+
+        if win_type == "draw":
+            desc = "Draw"
+        elif win_type == "false_win":
+            desc = "Called a false win" if is_winner else "Fed a false win"
+        elif win_type == "discard":
+            if is_winner:
+                desc = f"Won (Discard, {faan}f)"
+            elif is_discarder:
+                desc = f"Discarded into a loss ({faan}f)"
+            else:
+                desc = "Safe"
+        elif win_type == "self_draw":
+            desc = f"Self-drew ({faan}f)" if is_winner else f"Paid a self-draw ({faan}f)"
+        else:
+            desc = win_type
+
+        lines.append(f"**{hand_ref}** · {game_date or '?'} — {desc} ({sign}{points})")
+
+    embed.description = "\n".join(lines)
+    if len(rows) == limit:
+        embed.set_footer(text=f"Showing the {limit} most recent games this season")
     return embed
 
 

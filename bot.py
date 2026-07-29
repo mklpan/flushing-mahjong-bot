@@ -110,9 +110,17 @@ async def log_game(interaction: discord.Interaction):
 # Read-only commands
 # ---------------------------------------------------------------------------
 
-@bot.tree.command(name="leaderboard", description="Show the current season's leaderboard")
-async def leaderboard(interaction: discord.Interaction):
-    embed = await game_actions.build_leaderboard_embed()
+@bot.tree.command(name="leaderboard", description="Show the current season's leaderboard (or a past season's)")
+@app_commands.describe(season_number="View a specific past season instead of the current one")
+async def leaderboard(interaction: discord.Interaction, season_number: int = None):
+    if season_number is not None:
+        season = await db.get_season_by_number(season_number)
+        if not season:
+            await interaction.response.send_message(f"No season #{season_number} found. Try `/season-list`.", ephemeral=True)
+            return
+        embed = await game_actions.build_leaderboard_embed(season)
+    else:
+        embed = await game_actions.build_leaderboard_embed()
     await interaction.response.send_message(embed=embed)
 
 
@@ -132,8 +140,9 @@ async def recent_games(interaction: discord.Interaction):
         return
 
     lines = []
-    for game_id, ts, win_type, faan, winner_name, discarder_name in rows:
+    for game_id, ts, win_type, faan, winner_name, discarder_name, season_number, season_game_number in rows:
         dt = datetime.datetime.fromtimestamp(ts).strftime("%b %d, %I:%M %p")
+        hand_ref = f"S{season_number}-H{season_game_number}" if season_number is not None else f"H{game_id}"
         if win_type == "discard":
             desc = f"{winner_name} won off {discarder_name}'s discard ({faan} faan)"
         elif win_type == "self_draw":
@@ -142,7 +151,7 @@ async def recent_games(interaction: discord.Interaction):
             desc = f"{winner_name} called a false win"
         else:
             desc = "Draw / void hand"
-        lines.append(f"**H{game_id}** ({dt}) — {desc}")
+        lines.append(f"**{hand_ref}** ({dt}) — {desc}")
 
     embed = discord.Embed(
         title="🀄 Recent Games", description="\n".join(lines), color=discord.Color.purple()
@@ -156,7 +165,19 @@ async def season_info(interaction: discord.Interaction):
     if not season:
         await interaction.response.send_message("No active season set.", ephemeral=True)
         return
-    await interaction.response.send_message(f"📅 Current season: **{season['name']}**")
+    await interaction.response.send_message(f"📅 Current season: **Season {season['number']} ({season['name']})**")
+
+
+@bot.tree.command(name="season-list", description="List every season this club has had")
+async def season_list(interaction: discord.Interaction):
+    embed = await game_actions.build_season_list_embed()
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="hall-of-fame", description="Show the top 3 finishers from every season")
+async def hall_of_fame(interaction: discord.Interaction):
+    embed = await game_actions.build_hall_of_fame_embed()
+    await interaction.response.send_message(embed=embed)
 
 
 if __name__ == "__main__":

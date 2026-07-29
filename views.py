@@ -111,6 +111,7 @@ class DateNotesModal(discord.ui.Modal):
     def __init__(
         self,
         edit_game_id: int = None,
+        edit_display_ref: str = None,
         prefill_seated=None,
         prefill_faan=None,
         prefill_win_type=None,
@@ -118,9 +119,11 @@ class DateNotesModal(discord.ui.Modal):
         prefill_discarder=None,
         prefill_false_winner=None,
     ):
-        title = f"Edit Hand H{edit_game_id}" if edit_game_id else "Log a Hand — Date & Notes"
+        ref = edit_display_ref or (f"H{edit_game_id}" if edit_game_id else None)
+        title = f"Edit Hand {ref}" if edit_game_id else "Log a Hand — Date & Notes"
         super().__init__(title=title)
         self.edit_game_id = edit_game_id
+        self.edit_display_ref = ref
         self.prefill_seated = prefill_seated
         self.prefill_faan = prefill_faan
         self.prefill_win_type = prefill_win_type
@@ -148,6 +151,7 @@ class DateNotesModal(discord.ui.Modal):
             notes=self.notes_input.value.strip() or None,
             requester_id=interaction.user.id,
             edit_game_id=self.edit_game_id,
+            edit_display_ref=self.edit_display_ref,
             initial_seated=self.prefill_seated,
             initial_faan=self.prefill_faan,
             initial_win_type=self.prefill_win_type,
@@ -164,9 +168,10 @@ def _make_date_notes_modal_for_new():
     return modal
 
 
-def _make_date_notes_modal_for_edit(edit_game_id, game_date, notes, seated, faan, win_type, winner, discarder, false_winner):
+def _make_date_notes_modal_for_edit(edit_game_id, game_date, notes, seated, faan, win_type, winner, discarder, false_winner, edit_display_ref=None):
     modal = DateNotesModal(
         edit_game_id=edit_game_id,
+        edit_display_ref=edit_display_ref,
         prefill_seated=seated,
         prefill_faan=faan,
         prefill_win_type=win_type,
@@ -289,6 +294,7 @@ class GameDetailsView(discord.ui.View):
         notes,
         requester_id: int,
         edit_game_id: int = None,
+        edit_display_ref: str = None,
         initial_seated=None,
         initial_faan=None,
         initial_win_type=None,
@@ -301,6 +307,7 @@ class GameDetailsView(discord.ui.View):
         self.notes = notes
         self.requester_id = requester_id
         self.edit_game_id = edit_game_id
+        self.edit_display_ref = edit_display_ref or (f"H{edit_game_id}" if edit_game_id else None)
 
         self.faan = initial_faan
         self.win_type = initial_win_type
@@ -331,7 +338,7 @@ class GameDetailsView(discord.ui.View):
         return True
 
     def status_text(self) -> str:
-        prefix = f"**Editing H{self.edit_game_id}**" if self.edit_game_id else f"**Logging a hand — {self.game_date}**"
+        prefix = f"**Editing {self.edit_display_ref}**" if self.edit_game_id else f"**Logging a hand — {self.game_date}**"
         lines = [prefix]
         if self.edit_game_id:
             lines.append(f"Date: {self.game_date}")
@@ -458,7 +465,7 @@ class RoleSelectView(discord.ui.View):
         return True
 
     def status_text(self) -> str:
-        prefix = f"**Editing H{self.parent.edit_game_id}**" if self.parent.edit_game_id else f"**{self.parent.win_type.replace('_', ' ').title()} — {self.parent.game_date}**"
+        prefix = f"**Editing {self.parent.edit_display_ref}**" if self.parent.edit_game_id else f"**{self.parent.win_type.replace('_', ' ').title()} — {self.parent.game_date}**"
         lines = [prefix]
         if self.parent.win_type == "discard":
             lines.append(f"Winner: {self.winner.display_name if self.winner else '_not selected_'}")
@@ -476,11 +483,12 @@ class RoleSelectView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 def _format_game_option_label(row):
-    game_id, win_type, faan, game_date, winner_name, discarder_name = row
+    game_id, win_type, faan, game_date, winner_name, discarder_name, season_number, season_game_number = row
     type_label = {"discard": "Discard", "self_draw": "Self-draw", "false_win": "False win", "draw": "Draw"}.get(win_type, win_type)
     faan_part = f", {faan}f" if faan else ""
     who = winner_name or "—"
-    label = f"H{game_id} · {game_date or '?'} · {who} ({type_label}{faan_part})"
+    hand_ref = f"S{season_number}-H{season_game_number}" if season_number is not None else f"H{game_id}"
+    label = f"{hand_ref} · {game_date or '?'} · {who} ({type_label}{faan_part})"
     return label[:100]
 
 
@@ -498,10 +506,11 @@ class GamePickerSelect(discord.ui.Select):
                 await interaction.response.edit_message(content=f"Game #{game_id} no longer exists.", view=None)
                 return
             lines = [f"{name}: {points:+d}" for name, points in game["scores"]]
+            hand_ref = f"S{game['season_number']}-H{game['season_game_number']}" if game["season_number"] is not None else f"H{game_id}"
             confirm_view = ConfirmDeleteView(game_id=game_id)
             await interaction.response.edit_message(
                 content=(
-                    f"**Delete H{game_id}?** ({game['win_type']}"
+                    f"**Delete {hand_ref}?** ({game['win_type']}"
                     + (f", {game['faan']} faan" if game["faan"] else "")
                     + f")\n" + "\n".join(lines) + "\n\nThis cannot be undone."
                 ),
@@ -515,9 +524,10 @@ class GamePickerSelect(discord.ui.Select):
 
             discord_ids = [p[1] for p in game["players"]]
             members, missing = await _resolve_members(interaction.guild, discord_ids)
+            hand_ref = f"S{game['season_number']}-H{game['season_game_number']}" if game["season_number"] is not None else f"H{game_id}"
             if missing:
                 await interaction.response.edit_message(
-                    content=f"Can't edit H{game_id}: {len(missing)} seated player(s) are no longer in this server.",
+                    content=f"Can't edit {hand_ref}: {len(missing)} seated player(s) are no longer in this server.",
                     view=None,
                 )
                 return
@@ -533,6 +543,7 @@ class GamePickerSelect(discord.ui.Select):
 
             modal = _make_date_notes_modal_for_edit(
                 edit_game_id=game_id,
+                edit_display_ref=hand_ref,
                 game_date=game["game_date"] or datetime.date.today().isoformat(),
                 notes=game["notes"],
                 seated=members,
@@ -569,8 +580,9 @@ class ConfirmDeleteView(discord.ui.View):
         await db.delete_game(self.game_id)
         await game_actions.update_live_leaderboard(interaction.client)
         lines = [f"{name}: {points:+d}" for name, points in game["scores"]]
+        hand_ref = f"S{game['season_number']}-H{game['season_game_number']}" if game["season_number"] is not None else f"H{self.game_id}"
         await interaction.response.edit_message(
-            content=f"🗑️ Deleted H{self.game_id}. Reversed:\n" + "\n".join(lines), view=None
+            content=f"🗑️ Deleted {hand_ref}. Reversed:\n" + "\n".join(lines), view=None
         )
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -612,13 +624,30 @@ class NewSeasonModal(discord.ui.Modal, title="Start a New Season"):
         start_date = self.start_date_input.value.strip() or None
         end_date = self.end_date_input.value.strip() or None
 
+        # Grab the OLD leaderboard message location before we overwrite the
+        # setting, so we can hide it once the new season's board is posted.
+        old_channel_id = await db.get_setting("leaderboard_channel_id")
+        old_message_id = await db.get_setting("leaderboard_message_id")
+
         await db.create_new_season(name, str(interaction.user.id), season_number=number, start_date=start_date, end_date=end_date)
 
-        channel_id = await db.get_setting("leaderboard_channel_id")
+        channel_id = old_channel_id
         posted_note = ""
         if channel_id:
             try:
                 channel = interaction.client.get_channel(int(channel_id)) or await interaction.client.fetch_channel(int(channel_id))
+
+                # Hide the previous season's leaderboard message -- its data
+                # isn't gone (still in the database, viewable via /leaderboard
+                # <season>, /hall-of-fame, and CSV export), just removed from
+                # the channel to keep things from cluttering up over time.
+                if old_message_id:
+                    try:
+                        old_message = await channel.fetch_message(int(old_message_id))
+                        await old_message.delete()
+                    except Exception:
+                        pass
+
                 embed = await game_actions.build_leaderboard_embed()
                 message = await channel.send(embed=embed)
                 await db.set_setting("leaderboard_message_id", str(message.id))
@@ -626,7 +655,10 @@ class NewSeasonModal(discord.ui.Modal, title="Start a New Season"):
             except Exception:
                 posted_note = " (Couldn't auto-post a new leaderboard message -- check the leaderboard channel is still valid.)"
 
-        await interaction.response.send_message(f"🎉 New season started: **{name}**.{posted_note}", ephemeral=True)
+        await interaction.response.send_message(
+            f"🎉 New season started: **{name}**.{posted_note} Use `/hall-of-fame` to see top finishers from every past season.",
+            ephemeral=True,
+        )
 
 
 class EditSeasonModal(discord.ui.Modal, title="Edit Current Season"):
@@ -782,12 +814,13 @@ class ModToolsView(discord.ui.View):
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         writer.writerow(
-            ["game_id", "timestamp_utc", "win_type", "faan", "player_name", "discord_id", "points", "is_winner", "is_discarder", "notes"]
+            ["game_id", "logged_at_utc", "game_date", "season_number", "season_name", "season_game_number",
+             "win_type", "faan", "player_name", "discord_id", "points", "is_winner", "is_discarder", "notes"]
         )
         for row in rows:
-            game_id, ts, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes = row
+            game_id, ts, game_date, season_number, season_name, season_game_number, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes = row
             dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).isoformat()
-            writer.writerow([game_id, dt, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes])
+            writer.writerow([game_id, dt, game_date, season_number, season_name, season_game_number, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes])
 
         buffer.seek(0)
         file_bytes = io.BytesIO(buffer.getvalue().encode("utf-8"))

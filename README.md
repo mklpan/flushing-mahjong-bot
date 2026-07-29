@@ -13,10 +13,11 @@ running leaderboard, and showing player stats. Scoring follows the
 **Everyone:**
 - Click the **Log Game** button (posted via `/setup-loggame`) — walks you through date/notes → faan/win type/players → winner/discarder, matching your club's exact workflow
 - `/log-game` — same flow, but reachable without the button being visible
-- `/leaderboard` — current season's standings
-- `/stats [player]` — full stat card (current season **and** lifetime), including faan distributions, feeding stats, net discard given, and draw count
+- `/leaderboard [season_number]` — current season's standings, or a past season's if you give a number
+- `/stats [player]` — full stat card (current season **and** lifetime)
 - `/recent-games` — last 10 games logged
-- `/season-info` — see the current active season's name
+- `/season-list` — every season this club has had, with its date range and current-season marker
+- `/hall-of-fame` — top 3 finishers from every season, most recent first
 - `/ping` — check the bot is alive
 
 **Mods only** (require "Manage Server" by default — restrict further via **Server Settings → Integrations**):
@@ -44,7 +45,11 @@ Both now work by picking from a dropdown list of the 25 most recent games (label
 
 Each season has a **number** and a **name** (e.g. "Season 2 (Fall 2026)"), shown in the leaderboard title and on player stat cards. The **New Season** button lets a mod set both explicitly (or leave the number blank to auto-increment), plus optional start/end dates. Past games stay tied to their original season permanently, so `/stats` always shows accurate season *and* lifetime numbers.
 
-**Season date locking:** if a season has a start/end date set, any new game dated outside that window is rejected at submission time with a clear error. Use the **Season Dates** mod tool to add or update a date lock on the *currently active* season at any time (independent of starting a new season).
+**When a new season starts, the old leaderboard message is automatically deleted from the channel** to keep things tidy — nothing is lost, it's just no longer cluttering the channel. Past seasons remain fully viewable via `/leaderboard <season_number>`, `/hall-of-fame` (top 3 from every season), `/season-list`, and the CSV export (which now includes season number/name columns for filtering in Power BI/Tableau).
+
+### Season date locking
+
+If a season has a start/end date set, any new game dated outside that window is rejected at submission time with a clear error. Use the **Edit Season** mod tool to add or update a date lock on the *currently active* season at any time (independent of starting a new season).
 
 ### Duplicate-submission protection
 

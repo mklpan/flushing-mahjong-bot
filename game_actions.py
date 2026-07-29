@@ -140,7 +140,7 @@ async def perform_log_game(
                 "error": f"That date is after the **{season['name']}** season ends ({season['end_date']}).",
             }
 
-    game_id = await db.record_game(
+    game_id, season_game_number = await db.record_game(
         win_type=win_type,
         faan=faan if win_type in ("discard", "self_draw") else None,
         winner_player_id=winner_id,
@@ -158,6 +158,8 @@ async def perform_log_game(
 
     embed = build_logged_game_embed(
         game_id=game_id,
+        season_game_number=season_game_number,
+        season=season,
         win_type=win_type,
         faan=faan,
         game_date=game_date,
@@ -262,9 +264,19 @@ async def perform_edit_game(
     if not ok:
         return {"ok": False, "error": f"Game #{game_id} no longer exists."}
 
+    # Look up this game's own season info (not necessarily the currently
+    # active season -- an old season's game can still be edited).
+    edited_row = await db.get_game_for_edit(game_id)
+    season_game_number = edited_row["season_game_number"] if edited_row else None
+    season_for_display = None
+    if edited_row and edited_row["season_number"] is not None:
+        season_for_display = {"number": edited_row["season_number"], "name": edited_row["season_name"]}
+
     resolved_winner = winner if win_type != "false_win" else false_win_caller
     embed = build_logged_game_embed(
         game_id=game_id,
+        season_game_number=season_game_number,
+        season=season_for_display,
         win_type=win_type,
         faan=faan,
         game_date=game_date,
@@ -275,19 +287,25 @@ async def perform_edit_game(
         logged_by_name=f"{edited_by_name} (edited)" if edited_by_name else "(edited)",
         notes=notes,
     )
-    embed.title = f"✏️ Edited H{game_id}"
+    display_number = season_game_number if season_game_number is not None else game_id
+    embed.title = f"✏️ Edited H{display_number}"
 
     return {"ok": True, "game_id": game_id, "embed": embed}
 
 
 def build_logged_game_embed(
-    game_id, win_type, faan, game_date, seated, deltas, winner, discarder, logged_by_name, notes
+    game_id, win_type, faan, game_date, seated, deltas, winner, discarder, logged_by_name, notes,
+    season_game_number=None, season=None,
 ):
     """Matches the club's 'Logged H###' card format."""
+    display_number = season_game_number if season_game_number is not None else game_id
     embed = discord.Embed(
-        title=f"🀄 Logged H{game_id}",
+        title=f"🀄 Logged H{display_number}",
         color=EMBED_COLORS.get(win_type, discord.Color.green()),
     )
+
+    if season:
+        embed.add_field(name="Season", value=f"Season {season['number']} ({season['name']})", inline=True)
 
     if winner is not None:
         winner_points = deltas[winner]
@@ -372,8 +390,53 @@ async def build_leaderboard_embed(season: dict = None):
         embed.description = "No games logged yet this season. 🀄"
     else:
         embed.description = "\n".join(_format_leaderboard_lines(rows))
-    embed.set_footer(text="Updates automatically after every logged game")
+
+    active_season = await db.get_active_season()
+    is_current = active_season and season and active_season["id"] == season["id"]
+    if is_current or season is None:
+        embed.set_footer(text="Updates automatically after every logged game")
+    else:
+        embed.set_footer(text="Final standings — this season has ended")
     embed.timestamp = datetime.datetime.now()
+    return embed
+
+
+async def build_season_list_embed():
+    seasons = await db.get_all_seasons()
+    embed = discord.Embed(title=f"📅 {CLUB_NAME} — Seasons", color=discord.Color.blurple())
+    if not seasons:
+        embed.description = "No seasons yet."
+        return embed
+    lines = []
+    for s in seasons:
+        marker = " 🟢 *(current)*" if s["is_active"] else ""
+        date_range = ""
+        if s["start_date"] or s["end_date"]:
+            date_range = f" · {s['start_date'] or 'open'} → {s['end_date'] or 'open'}"
+        lines.append(f"**Season {s['number']}** — {s['name']}{date_range}{marker}")
+    embed.description = "\n".join(lines)
+    return embed
+
+
+async def build_hall_of_fame_embed():
+    seasons = await db.get_all_seasons()
+    embed = discord.Embed(title=f"🏛️ {CLUB_NAME} — Hall of Fame", color=discord.Color.dark_gold())
+    if not seasons:
+        embed.description = "No seasons yet."
+        return embed
+
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for s in reversed(seasons):  # most recent first
+        rows = await db.get_leaderboard(s["id"])
+        header = f"**Season {s['number']} — {s['name']}**" + (" 🟢" if s["is_active"] else "")
+        if not rows:
+            lines.append(f"{header}\n_no games logged_")
+        else:
+            top3 = rows[:3]
+            entries = [f"{medals[i]} {name} — {total} pts" for i, (name, total, hands, wins) in enumerate(top3)]
+            lines.append(header + "\n" + "\n".join(entries))
+    embed.description = "\n\n".join(lines)
     return embed
 
 

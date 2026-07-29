@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS games (
     winner_id INTEGER,            -- null for draw
     discarder_id INTEGER,         -- set only for discard wins
     season_id INTEGER,            -- which season this game counts toward
+    season_game_number INTEGER,   -- this game's position WITHIN its season (resets each season) -- display only, "id" above remains the true unique key used for delete/edit
     logged_by TEXT NOT NULL,      -- discord_id of whoever ran the command
     notes TEXT
 );
@@ -138,6 +139,58 @@ async def _run_migrations(db):
         )
         await db.commit()
 
+    try:
+        await db.execute("ALTER TABLE games ADD COLUMN season_game_number INTEGER")
+        await db.commit()
+    except Exception as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+
+    # Backfill season_game_number for any games that predate that column,
+    # numbering each season's games in the order they were originally
+    # logged (by timestamp), so H1/H2/H3... start over cleanly per season.
+    async with db.execute(
+        "SELECT DISTINCT season_id FROM games WHERE season_game_number IS NULL"
+    ) as cur:
+        seasons_needing_backfill = [r[0] for r in await cur.fetchall()]
+    for sid in seasons_needing_backfill:
+        if sid is None:
+            query, params = "SELECT id FROM games WHERE season_id IS NULL ORDER BY timestamp ASC, id ASC", ()
+        else:
+            query, params = "SELECT id FROM games WHERE season_id = ? ORDER BY timestamp ASC, id ASC", (sid,)
+        async with db.execute(query, params) as cur:
+            game_ids_in_order = [r[0] for r in await cur.fetchall()]
+        for i, gid in enumerate(game_ids_in_order, start=1):
+            await db.execute(
+                "UPDATE games SET season_game_number = ? WHERE id = ?", (i, gid)
+            )
+    if seasons_needing_backfill:
+        await db.commit()
+
+
+async def get_all_seasons():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, season_number, name, start_date, end_date, is_active FROM seasons ORDER BY season_number ASC"
+        ) as cur:
+            rows = await cur.fetchall()
+            return [
+                {"id": r[0], "number": r[1], "name": r[2], "start_date": r[3], "end_date": r[4], "is_active": bool(r[5])}
+                for r in rows
+            ]
+
+
+async def get_season_by_number(season_number: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, season_number, name, start_date, end_date, is_active FROM seasons WHERE season_number = ?",
+            (season_number,),
+        ) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+            return {"id": row[0], "number": row[1], "name": row[2], "start_date": row[3], "end_date": row[4], "is_active": bool(row[5])}
+
 
 async def get_active_season():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -232,13 +285,24 @@ async def record_game(
     notes: str = None,
     season_id: int = None,
     game_date: str = None,
-) -> int:
-    """score_deltas: {player_id: points_delta}"""
+):
+    """score_deltas: {player_id: points_delta}
+    Returns (game_id, season_game_number)."""
     async with aiosqlite.connect(DB_PATH) as db:
+        if season_id is not None:
+            async with db.execute(
+                "SELECT COALESCE(MAX(season_game_number), 0) FROM games WHERE season_id = ?",
+                (season_id,),
+            ) as cur:
+                (max_num,) = await cur.fetchone()
+            season_game_number = max_num + 1
+        else:
+            season_game_number = None
+
         cur = await db.execute(
             """INSERT INTO games
-               (timestamp, game_date, win_type, faan, winner_id, discarder_id, season_id, logged_by, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (timestamp, game_date, win_type, faan, winner_id, discarder_id, season_id, season_game_number, logged_by, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 time.time(),
                 game_date,
@@ -247,6 +311,7 @@ async def record_game(
                 winner_player_id,
                 discarder_player_id,
                 season_id,
+                season_game_number,
                 logged_by,
                 notes,
             ),
@@ -260,7 +325,7 @@ async def record_game(
             )
 
         await db.commit()
-        return game_id
+        return game_id, season_game_number
 
 
 async def get_setting(key: str):
@@ -574,10 +639,12 @@ async def get_recent_games_for_picker(limit: int = 25):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """
-            SELECT g.id, g.win_type, g.faan, g.game_date, winner.display_name, discarder.display_name
+            SELECT g.id, g.win_type, g.faan, g.game_date, winner.display_name, discarder.display_name,
+                   s.season_number, g.season_game_number
             FROM games g
             LEFT JOIN players winner ON winner.id = g.winner_id
             LEFT JOIN players discarder ON discarder.id = g.discarder_id
+            LEFT JOIN seasons s ON s.id = g.season_id
             ORDER BY g.timestamp DESC
             LIMIT ?
             """,
@@ -591,14 +658,16 @@ async def get_game_for_edit(game_id: int):
     player's Discord ID (so we can look up live discord.Member objects)."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            """SELECT id, win_type, faan, game_date, notes, winner_id, discarder_id, season_id
-               FROM games WHERE id = ?""",
+            """SELECT g.id, g.win_type, g.faan, g.game_date, g.notes, g.winner_id, g.discarder_id,
+                      g.season_id, g.season_game_number, s.season_number, s.name
+               FROM games g LEFT JOIN seasons s ON s.id = g.season_id
+               WHERE g.id = ?""",
             (game_id,),
         ) as cur:
             row = await cur.fetchone()
         if not row:
             return None
-        gid, win_type, faan, game_date, notes, winner_id, discarder_id, season_id = row
+        gid, win_type, faan, game_date, notes, winner_id, discarder_id, season_id, season_game_number, season_number, season_name = row
 
         async with db.execute(
             """SELECT p.id, p.discord_id, p.display_name
@@ -617,6 +686,9 @@ async def get_game_for_edit(game_id: int):
             "winner_id": winner_id,
             "discarder_id": discarder_id,
             "season_id": season_id,
+            "season_game_number": season_game_number,
+            "season_number": season_number,
+            "season_name": season_name,
             "players": players,
         }
 
@@ -660,10 +732,12 @@ async def get_game(game_id: int):
         async with db.execute(
             """
             SELECT g.id, g.timestamp, g.win_type, g.faan,
-                   winner.display_name, discarder.display_name, g.notes
+                   winner.display_name, discarder.display_name, g.notes,
+                   g.season_game_number, s.season_number
             FROM games g
             LEFT JOIN players winner ON winner.id = g.winner_id
             LEFT JOIN players discarder ON discarder.id = g.discarder_id
+            LEFT JOIN seasons s ON s.id = g.season_id
             WHERE g.id = ?
             """,
             (game_id,),
@@ -691,6 +765,8 @@ async def get_game(game_id: int):
             "winner_name": game_row[4],
             "discarder_name": game_row[5],
             "notes": game_row[6],
+            "season_game_number": game_row[7],
+            "season_number": game_row[8],
             "scores": score_rows,  # list of (display_name, points)
         }
 
@@ -756,12 +832,16 @@ async def get_game_player_ids(game_id: int):
 
 async def export_rows():
     """One row per player per game, long format -- suitable for CSV export
-    into Power BI / Tableau / Excel."""
+    into Power BI / Tableau / Excel. Includes season info for filtering."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """
             SELECT g.id AS game_id,
                    g.timestamp,
+                   g.game_date,
+                   s.season_number,
+                   s.name AS season_name,
+                   g.season_game_number,
                    g.win_type,
                    g.faan,
                    p.display_name AS player_name,
@@ -773,6 +853,7 @@ async def export_rows():
             FROM game_scores gs
             JOIN games g ON g.id = gs.game_id
             JOIN players p ON p.id = gs.player_id
+            LEFT JOIN seasons s ON s.id = g.season_id
             ORDER BY g.timestamp ASC, g.id ASC
             """
         ) as cur:
@@ -784,10 +865,12 @@ async def get_recent_games(limit: int = 10):
         async with db.execute(
             """
             SELECT g.id, g.timestamp, g.win_type, g.faan,
-                   winner.display_name, discarder.display_name
+                   winner.display_name, discarder.display_name,
+                   s.season_number, g.season_game_number
             FROM games g
             LEFT JOIN players winner ON winner.id = g.winner_id
             LEFT JOIN players discarder ON discarder.id = g.discarder_id
+            LEFT JOIN seasons s ON s.id = g.season_id
             ORDER BY g.timestamp DESC
             LIMIT ?
             """,

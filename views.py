@@ -132,11 +132,12 @@ class WinTypeSelect(discord.ui.Select):
         super().__init__(placeholder="Win type", options=WIN_TYPE_OPTIONS, min_values=1, max_values=1, row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        self.view.win_type = self.values[0]
-        if not _requires_faan(self.view.win_type):
-            self.view.faan = None
-        self.view.rebuild_items()
-        await interaction.response.edit_message(content=self.view.status_text(), view=self.view)
+        view = self.view  # grab this BEFORE rebuild_items() detaches self from it
+        view.win_type = self.values[0]
+        if not _requires_faan(view.win_type):
+            view.faan = None
+        view.rebuild_items()
+        await interaction.response.edit_message(content=view.status_text(), view=view)
 
 
 class SeatedSelect(discord.ui.UserSelect):

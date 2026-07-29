@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import datetime
 import discord
@@ -6,6 +8,8 @@ from dotenv import load_dotenv
 
 import database as db
 import scoring
+import game_actions
+from views import LogGameButtonView
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -20,6 +24,10 @@ class MahjongBot(discord.Client):
 
     async def setup_hook(self):
         await db.init_db()
+        # Re-register the persistent Log Game button so it keeps working
+        # after a restart/redeploy (Discord remembers the message, the
+        # bot needs to remember the view).
+        self.add_view(LogGameButtonView())
         await self.tree.sync()
 
 
@@ -42,6 +50,38 @@ async def on_ready():
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong! 🀄")
 
+
+# ---------------------------------------------------------------------------
+# Setup commands (mod only)
+# ---------------------------------------------------------------------------
+
+@bot.tree.command(name="setup", description="Post the persistent Log Game button in this channel")
+@app_commands.default_permissions(manage_guild=True)
+async def setup(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🀄 Mahjong Club",
+        description="Click below to log a completed hand — no slash command needed.",
+        color=discord.Color.blurple(),
+    )
+    await interaction.response.send_message(embed=embed, view=LogGameButtonView())
+
+
+@bot.tree.command(name="setup-leaderboard", description="Post a live-updating leaderboard in this channel")
+@app_commands.default_permissions(manage_guild=True)
+async def setup_leaderboard(interaction: discord.Interaction):
+    embed = await game_actions.build_leaderboard_embed()
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    await db.set_setting("leaderboard_channel_id", str(interaction.channel_id))
+    await db.set_setting("leaderboard_message_id", str(message.id))
+    await interaction.followup.send(
+        "This message will now auto-update after every logged game.", ephemeral=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logging (slash command version -- the button/modal flow lives in views.py)
+# ---------------------------------------------------------------------------
 
 @bot.tree.command(name="log-game", description="Log a completed mahjong hand")
 @app_commands.describe(
@@ -70,137 +110,32 @@ async def log_game(
     false_win_caller: discord.Member = None,
     notes: str = None,
 ):
-    seated = [player1, player2, player3, player4]
-    if len(set(m.id for m in seated)) != 4:
-        await interaction.response.send_message(
-            "All 4 seats must be different players.", ephemeral=True
-        )
-        return
-
-    wt = win_type.value
-
-    try:
-        # Validate inputs per win type
-        if wt in ("discard", "self_draw"):
-            if winner is None or faan is None:
-                await interaction.response.send_message(
-                    "Discard and self-draw wins require both `winner` and `faan`.",
-                    ephemeral=True,
-                )
-                return
-            if winner not in seated:
-                await interaction.response.send_message(
-                    "Winner must be one of the 4 seated players.", ephemeral=True
-                )
-                return
-            scoring.validate_win_faan(faan)
-            faan = scoring.clamp_faan(faan)
-
-        if wt == "discard":
-            if discarder is None:
-                await interaction.response.send_message(
-                    "Discard wins require `discarder`.", ephemeral=True
-                )
-                return
-            if discarder not in seated or discarder == winner:
-                await interaction.response.send_message(
-                    "Discarder must be one of the other 3 seated players.",
-                    ephemeral=True,
-                )
-                return
-
-        if wt == "false_win":
-            if false_win_caller is None or false_win_caller not in seated:
-                await interaction.response.send_message(
-                    "False wins require `false_win_caller` to be one of the 4 seated players.",
-                    ephemeral=True,
-                )
-                return
-
-    except scoring.ScoringError as e:
-        await interaction.response.send_message(str(e), ephemeral=True)
-        return
-
-    # Register/refresh all 4 players in DB
-    player_ids = {}
-    for m in seated:
-        player_ids[m.id] = await db.get_or_create_player(str(m.id), m.display_name)
-
-    # Build score deltas for all 4 seated players (default 0)
-    deltas = {player_ids[m.id]: 0 for m in seated}
-    winner_id = discarder_id = None
-
-    if wt == "discard":
-        result = scoring.score_discard_win(faan)
-        winner_id = player_ids[winner.id]
-        discarder_id = player_ids[discarder.id]
-        deltas[winner_id] += result["winner"]
-        deltas[discarder_id] += result["discarder"]
-
-    elif wt == "self_draw":
-        result = scoring.score_self_draw_win(faan)
-        winner_id = player_ids[winner.id]
-        deltas[winner_id] += result["winner"]
-        for m in seated:
-            if m.id != winner.id:
-                deltas[player_ids[m.id]] += result["each_opponent"]
-
-    elif wt == "false_win":
-        result = scoring.score_false_win()
-        winner_id = player_ids[false_win_caller.id]  # stored as "winner" for the false-win row
-        deltas[winner_id] += result["false_winner"]
-        for m in seated:
-            if m.id != false_win_caller.id:
-                deltas[player_ids[m.id]] += result["each_opponent"]
-
-    elif wt == "draw":
-        pass  # all deltas stay 0
-
-    game_id = await db.record_game(
-        win_type=wt,
-        faan=faan if wt in ("discard", "self_draw") else None,
-        winner_player_id=winner_id,
-        discarder_player_id=discarder_id,
-        logged_by=str(interaction.user.id),
-        score_deltas=deltas,
+    result = await game_actions.perform_log_game(
+        seated=[player1, player2, player3, player4],
+        win_type=win_type.value,
+        winner=winner,
+        faan=faan,
+        discarder=discarder,
+        false_win_caller=false_win_caller,
         notes=notes,
+        logged_by_id=str(interaction.user.id),
     )
 
-    # Build a friendly confirmation embed
-    embed = discord.Embed(
-        title=f"Game #{game_id} logged",
-        color=discord.Color.green(),
-        timestamp=datetime.datetime.now(),
-    )
-    embed.add_field(name="Seats", value=", ".join(m.display_name for m in seated), inline=False)
-    embed.add_field(name="Result", value=win_type.name, inline=True)
-    if faan is not None:
-        embed.add_field(name="Faan", value=str(faan), inline=True)
+    if not result["ok"]:
+        await interaction.response.send_message(result["error"], ephemeral=True)
+        return
 
-    lines = []
-    for m in seated:
-        pid = player_ids[m.id]
-        d = deltas[pid]
-        sign = "+" if d >= 0 else ""
-        lines.append(f"{m.display_name}: {sign}{d}")
-    embed.add_field(name="Points", value="\n".join(lines), inline=False)
+    await interaction.response.send_message(embed=result["embed"])
+    await game_actions.update_live_leaderboard(interaction.client)
 
-    await interaction.response.send_message(embed=embed)
 
+# ---------------------------------------------------------------------------
+# Read-only commands
+# ---------------------------------------------------------------------------
 
 @bot.tree.command(name="leaderboard", description="Show the club leaderboard")
 async def leaderboard(interaction: discord.Interaction):
-    rows = await db.get_leaderboard()
-    if not rows:
-        await interaction.response.send_message("No games logged yet. 🀄")
-        return
-
-    embed = discord.Embed(title="🏆 Mahjong Club Leaderboard", color=discord.Color.gold())
-    lines = []
-    for i, (name, total, games_played) in enumerate(rows, start=1):
-        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-        lines.append(f"{medal} **{name}** — {total} pts ({games_played} games)")
-    embed.description = "\n".join(lines)
+    embed = await game_actions.build_leaderboard_embed()
     await interaction.response.send_message(embed=embed)
 
 
@@ -249,6 +184,144 @@ async def recent_games(interaction: discord.Interaction):
         title="🀄 Recent Games", description="\n".join(lines), color=discord.Color.purple()
     )
     await interaction.response.send_message(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# Mod tools
+# ---------------------------------------------------------------------------
+
+@bot.tree.command(name="delete-game", description="[Mod] Delete a logged game and reverse its points")
+@app_commands.describe(game_id="The game # shown in /recent-games or the log confirmation")
+@app_commands.default_permissions(manage_guild=True)
+async def delete_game(interaction: discord.Interaction, game_id: int):
+    game = await db.get_game(game_id)
+    if not game:
+        await interaction.response.send_message(f"No game found with id #{game_id}.", ephemeral=True)
+        return
+
+    await db.delete_game(game_id)
+    await game_actions.update_live_leaderboard(interaction.client)
+
+    lines = [f"{name}: {points:+d}" for name, points in game["scores"]]
+    await interaction.response.send_message(
+        f"🗑️ Deleted game #{game_id} ({game['win_type']}"
+        + (f", {game['faan']} faan" if game["faan"] else "")
+        + ").\nReversed:\n" + "\n".join(lines)
+    )
+
+
+@bot.tree.command(name="edit-game", description="[Mod] Correct the faan count on a logged discard/self-draw win")
+@app_commands.describe(
+    game_id="The game # shown in /recent-games or the log confirmation",
+    new_faan="The corrected faan count (3-13)",
+)
+@app_commands.default_permissions(manage_guild=True)
+async def edit_game(interaction: discord.Interaction, game_id: int, new_faan: int):
+    ids = await db.get_game_player_ids(game_id)
+    if not ids:
+        await interaction.response.send_message(f"No game found with id #{game_id}.", ephemeral=True)
+        return
+
+    if ids["win_type"] not in ("discard", "self_draw"):
+        await interaction.response.send_message(
+            "Only discard and self-draw wins have a faan count to edit. "
+            "For other corrections, delete the game with `/delete-game` and re-log it.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        scoring.validate_win_faan(new_faan)
+    except scoring.ScoringError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+    new_faan = scoring.clamp_faan(new_faan)
+
+    new_deltas = {pid: 0 for pid in ids["player_ids"]}
+    if ids["win_type"] == "discard":
+        result = scoring.score_discard_win(new_faan)
+        new_deltas[ids["winner_id"]] += result["winner"]
+        new_deltas[ids["discarder_id"]] += result["discarder"]
+    else:
+        result = scoring.score_self_draw_win(new_faan)
+        new_deltas[ids["winner_id"]] += result["winner"]
+        for pid in ids["player_ids"]:
+            if pid != ids["winner_id"]:
+                new_deltas[pid] += result["each_opponent"]
+
+    await db.update_game_faan(game_id, new_faan, new_deltas)
+    await game_actions.update_live_leaderboard(interaction.client)
+
+    game = await db.get_game(game_id)
+    lines = [f"{name}: {points:+d}" for name, points in game["scores"]]
+    await interaction.response.send_message(
+        f"✏️ Game #{game_id} updated to {new_faan} faan.\nNew points:\n" + "\n".join(lines)
+    )
+
+
+@bot.tree.command(name="blacklist", description="[Mod] Prevent a player from being logged in future games")
+@app_commands.describe(player="Player to blacklist")
+@app_commands.default_permissions(manage_guild=True)
+async def blacklist(interaction: discord.Interaction, player: discord.Member):
+    await db.get_or_create_player(str(player.id), player.display_name)
+    await db.set_blacklisted(str(player.id), True)
+    await interaction.response.send_message(f"🚫 {player.display_name} has been blacklisted from logging games.")
+
+
+@bot.tree.command(name="unblacklist", description="[Mod] Remove a player from the blacklist")
+@app_commands.describe(player="Player to unblacklist")
+@app_commands.default_permissions(manage_guild=True)
+async def unblacklist(interaction: discord.Interaction, player: discord.Member):
+    updated = await db.set_blacklisted(str(player.id), False)
+    if not updated:
+        await interaction.response.send_message(
+            f"{player.display_name} has no record yet (never logged a game).", ephemeral=True
+        )
+        return
+    await interaction.response.send_message(f"✅ {player.display_name} has been unblacklisted.")
+
+
+@bot.tree.command(name="blacklist-list", description="[Mod] Show all currently blacklisted players")
+@app_commands.default_permissions(manage_guild=True)
+async def blacklist_list(interaction: discord.Interaction):
+    rows = await db.get_blacklisted_players()
+    if not rows:
+        await interaction.response.send_message("No one is currently blacklisted.", ephemeral=True)
+        return
+    lines = [f"- {name}" for name, _ in rows]
+    await interaction.response.send_message("**Blacklisted players:**\n" + "\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="export-csv", description="[Mod] Export all logged games as a CSV file")
+@app_commands.default_permissions(manage_guild=True)
+async def export_csv(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    rows = await db.export_rows()
+    if not rows:
+        await interaction.followup.send("No games logged yet.", ephemeral=True)
+        return
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "game_id", "timestamp_utc", "win_type", "faan",
+            "player_name", "discord_id", "points", "is_winner", "is_discarder", "notes",
+        ]
+    )
+    for row in rows:
+        game_id, ts, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes = row
+        dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).isoformat()
+        writer.writerow([game_id, dt, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes])
+
+    buffer.seek(0)
+    file_bytes = io.BytesIO(buffer.getvalue().encode("utf-8"))
+    filename = f"mahjong_export_{datetime.date.today().isoformat()}.csv"
+    await interaction.followup.send(
+        content="Here's your export — one row per player per game, ready for Power BI / Tableau / Excel.",
+        file=discord.File(file_bytes, filename=filename),
+        ephemeral=True,
+    )
 
 
 if __name__ == "__main__":

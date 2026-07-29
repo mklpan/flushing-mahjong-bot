@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS game_scores (
     FOREIGN KEY (game_id) REFERENCES games(id),
     FOREIGN KEY (player_id) REFERENCES players(id)
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 
@@ -50,6 +55,20 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()
+        await _run_migrations(db)
+
+
+async def _run_migrations(db):
+    """Safely add columns to tables that may already exist from an
+    earlier version of the bot, without erroring if already applied."""
+    try:
+        await db.execute(
+            "ALTER TABLE players ADD COLUMN blacklisted INTEGER NOT NULL DEFAULT 0"
+        )
+        await db.commit()
+    except Exception as e:
+        if "duplicate column" not in str(e).lower():
+            raise
 
 
 async def get_or_create_player(discord_id: str, display_name: str) -> int:
@@ -110,6 +129,53 @@ async def record_game(
 
         await db.commit()
         return game_id
+
+
+async def get_setting(key: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def set_setting(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await db.commit()
+
+
+async def set_blacklisted(discord_id: str, blacklisted: bool) -> bool:
+    """Returns True if a player record was found and updated."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE players SET blacklisted = ? WHERE discord_id = ?",
+            (1 if blacklisted else 0, discord_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def is_blacklisted(discord_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT blacklisted FROM players WHERE discord_id = ?", (discord_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return bool(row and row[0])
+
+
+async def get_blacklisted_players():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT display_name, discord_id FROM players WHERE blacklisted = 1"
+        ) as cur:
+            return await cur.fetchall()
 
 
 async def get_leaderboard():
@@ -176,6 +242,131 @@ async def get_player_stats(discord_id: str):
             "avg_faan": round(avg_faan, 1) if avg_faan else None,
             "false_wins": false_wins,
         }
+
+
+async def get_game(game_id: int):
+    """Full detail for one game, used to show a confirmation before delete/edit."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT g.id, g.timestamp, g.win_type, g.faan,
+                   winner.display_name, discarder.display_name, g.notes
+            FROM games g
+            LEFT JOIN players winner ON winner.id = g.winner_id
+            LEFT JOIN players discarder ON discarder.id = g.discarder_id
+            WHERE g.id = ?
+            """,
+            (game_id,),
+        ) as cur:
+            game_row = await cur.fetchone()
+        if not game_row:
+            return None
+
+        async with db.execute(
+            """
+            SELECT p.display_name, gs.points
+            FROM game_scores gs
+            JOIN players p ON p.id = gs.player_id
+            WHERE gs.game_id = ?
+            """,
+            (game_id,),
+        ) as cur:
+            score_rows = await cur.fetchall()
+
+        return {
+            "id": game_row[0],
+            "timestamp": game_row[1],
+            "win_type": game_row[2],
+            "faan": game_row[3],
+            "winner_name": game_row[4],
+            "discarder_name": game_row[5],
+            "notes": game_row[6],
+            "scores": score_rows,  # list of (display_name, points)
+        }
+
+
+async def delete_game(game_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+        if not await cur.fetchone():
+            return False
+        await db.execute("DELETE FROM game_scores WHERE game_id = ?", (game_id,))
+        await db.execute("DELETE FROM games WHERE id = ?", (game_id,))
+        await db.commit()
+        return True
+
+
+async def update_game_faan(game_id: int, new_faan: int, new_deltas: dict) -> bool:
+    """Corrects the faan count on an existing discard/self_draw game and
+    replaces its score deltas. new_deltas: {player_id: points_delta}
+    Keeps the same seated players, winner, and win_type."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+        if not await cur.fetchone():
+            return False
+
+        await db.execute(
+            "UPDATE games SET faan = ? WHERE id = ?", (new_faan, game_id)
+        )
+        await db.execute("DELETE FROM game_scores WHERE game_id = ?", (game_id,))
+        for player_id, points in new_deltas.items():
+            await db.execute(
+                "INSERT INTO game_scores (game_id, player_id, points) VALUES (?, ?, ?)",
+                (game_id, player_id, points),
+            )
+        await db.commit()
+        return True
+
+
+async def get_game_player_ids(game_id: int):
+    """Returns {win_type, winner_id, discarder_id, player_ids: [4 ids]}
+    or None if the game doesn't exist. Used to recompute scores on edit."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT win_type, winner_id, discarder_id FROM games WHERE id = ?",
+            (game_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        win_type, winner_id, discarder_id = row
+
+        async with db.execute(
+            "SELECT player_id FROM game_scores WHERE game_id = ?", (game_id,)
+        ) as cur:
+            player_ids = [r[0] for r in await cur.fetchall()]
+
+        return {
+            "win_type": win_type,
+            "winner_id": winner_id,
+            "discarder_id": discarder_id,
+            "player_ids": player_ids,
+        }
+
+
+async def export_rows():
+    """One row per player per game, long format -- suitable for CSV export
+    into Power BI / Tableau / Excel."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT g.id AS game_id,
+                   g.timestamp,
+                   g.win_type,
+                   g.faan,
+                   p.display_name AS player_name,
+                   p.discord_id,
+                   gs.points,
+                   CASE WHEN g.winner_id = gs.player_id THEN 1 ELSE 0 END AS is_winner,
+                   CASE WHEN g.discarder_id = gs.player_id THEN 1 ELSE 0 END AS is_discarder,
+                   g.notes
+            FROM game_scores gs
+            JOIN games g ON g.id = gs.game_id
+            JOIN players p ON p.id = gs.player_id
+            ORDER BY g.timestamp ASC, g.id ASC
+            """
+        ) as cur:
+            return await cur.fetchall()
 
 
 async def get_recent_games(limit: int = 10):

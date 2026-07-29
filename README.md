@@ -10,11 +10,34 @@ running leaderboard, and showing player stats. Scoring follows the
 
 ## Commands
 
-- `/log-game` — log a completed hand (4 seated players, win type, faan, etc.)
+**Everyone:**
+- `/log-game` — log a completed hand via slash command (4 seated players, win type, faan, etc.)
 - `/leaderboard` — show total points, ranked
 - `/stats [player]` — games played, win rate, avg winning faan, etc.
 - `/recent-games` — last 10 games logged
 - `/ping` — check the bot is alive
+- Clicking the **Log Game button** (posted via `/setup`) — same as `/log-game` but with dropdowns instead of typing
+
+**Mods only** (require the "Manage Server" Discord permission by default — see *Restricting mod commands* below):
+- `/setup` — post the persistent Log Game button in the current channel (do this once)
+- `/setup-leaderboard` — post a leaderboard message that auto-updates after every game (do this once)
+- `/delete-game <game_id>` — remove a logged game and reverse its points
+- `/edit-game <game_id> <new_faan>` — correct a mis-entered faan count on a discard/self-draw win
+- `/blacklist <player>` / `/unblacklist <player>` — block/unblock a player from being logged in future games
+- `/blacklist-list` — see who's currently blacklisted
+- `/export-csv` — download all logged games as a CSV (one row per player per game) for Power BI, Tableau, or Excel
+
+### Restricting mod commands
+
+By default, mod commands require the built-in Discord **"Manage Server"** permission. If you want to grant access to a specific Mod role instead (without giving them full server management), go to your server's **Settings → Integrations → [your bot] → Manage** and set per-command permissions there — no code changes needed.
+
+### Setting up the button and live leaderboard
+
+After deploying (see below), run these once in your server:
+1. In your `#game-log` channel: `/setup` — posts the persistent button
+2. In your `#leaderboard` channel (or wherever you want it): `/setup-leaderboard` — posts the auto-updating leaderboard
+
+**Note on bot permissions:** `/export-csv` sends a file attachment, which requires the **Attach Files** permission. If you invited the bot before this feature was added, re-generate your invite URL (OAuth2 → URL Generator) with `Attach Files` checked, and re-invite it (existing invites don't retroactively grant new permissions).
 
 ## Part 1: Create the Discord bot application
 
@@ -26,7 +49,7 @@ running leaderboard, and showing player stats. Scoring follows the
    others adding it to their servers.
 5. Go to the **OAuth2 → URL Generator** tab:
    - Under **Scopes**, check `bot` and `applications.commands`
-   - Under **Bot Permissions**, check `Send Messages` and `Embed Links`
+   - Under **Bot Permissions**, check `Send Messages`, `Embed Links`, and `Attach Files`
    - Copy the generated URL at the bottom, open it in your browser, and
      select your club's server to invite the bot.
 

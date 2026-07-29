@@ -479,26 +479,29 @@ async def build_player_history_embed(discord_id: str, display_name: str, limit: 
         sign = "+" if points >= 0 else ""
 
         if win_type == "draw":
-            desc = "Draw"
+            icon, desc = "🤝", "Draw"
         elif win_type == "false_win":
-            desc = "Called a false win" if is_winner else "Fed a false win"
+            icon, desc = ("🚩", "Called a false win") if is_winner else ("💰", "Fed a false win")
         elif win_type == "discard":
             if is_winner:
-                desc = f"Won (Discard, {faan}f)"
+                icon, desc = "🏆", f"Won (Discard, {faan}f)"
             elif is_discarder:
-                desc = f"Discarded into a loss ({faan}f)"
+                icon, desc = "💸", f"Discarded into a loss ({faan}f)"
             else:
-                desc = "Safe"
+                icon, desc = "🛡️", "Safe"
         elif win_type == "self_draw":
-            desc = f"Self-drew ({faan}f)" if is_winner else f"Paid a self-draw ({faan}f)"
+            icon, desc = ("🏆", f"Self-drew ({faan}f)") if is_winner else ("💸", f"Paid a self-draw ({faan}f)")
         else:
-            desc = win_type
+            icon, desc = "❓", win_type
 
-        lines.append(f"**{hand_ref}** · {game_date or '?'} — {desc} ({sign}{points})")
+        lines.append(f"{icon} **{hand_ref}** · {game_date or '?'} — {desc} ({sign}{points})")
 
     embed.description = "\n".join(lines)
+    legend = "🏆 Win · 💸 Loss · 🛡️ Safe · 🤝 Draw · 🚩 False win called · 💰 Fed false win"
     if len(rows) == limit:
-        embed.set_footer(text=f"Showing the {limit} most recent games this season")
+        embed.set_footer(text=f"Showing the {limit} most recent games this season · {legend}")
+    else:
+        embed.set_footer(text=legend)
     return embed
 
 

@@ -376,7 +376,7 @@ async def get_blacklisted_players():
 
 
 async def get_leaderboard(season_id: int = None):
-    """Returns list of (display_name, total_points, games_played, wins) sorted desc.
+    """Returns list of (display_name, total_points, games_played, wins, draws) sorted desc.
     If season_id is given, only counts games from that season."""
     async with aiosqlite.connect(DB_PATH) as db:
         if season_id is not None:
@@ -384,7 +384,8 @@ async def get_leaderboard(season_id: int = None):
                 SELECT p.display_name,
                        COALESCE(SUM(gs.points), 0) AS total,
                        COUNT(gs.game_id) AS games_played,
-                       COALESCE(SUM(CASE WHEN g.winner_id = p.id AND g.win_type IN ('discard','self_draw') THEN 1 ELSE 0 END), 0) AS wins
+                       COALESCE(SUM(CASE WHEN g.winner_id = p.id AND g.win_type IN ('discard','self_draw') THEN 1 ELSE 0 END), 0) AS wins,
+                       COALESCE(SUM(CASE WHEN g.win_type = 'draw' THEN 1 ELSE 0 END), 0) AS draws
                 FROM players p
                 JOIN game_scores gs ON gs.player_id = p.id
                 JOIN games g ON g.id = gs.game_id AND g.season_id = ?
@@ -397,7 +398,8 @@ async def get_leaderboard(season_id: int = None):
                 SELECT p.display_name,
                        COALESCE(SUM(gs.points), 0) AS total,
                        COUNT(gs.game_id) AS games_played,
-                       COALESCE(SUM(CASE WHEN g.winner_id = p.id AND g.win_type IN ('discard','self_draw') THEN 1 ELSE 0 END), 0) AS wins
+                       COALESCE(SUM(CASE WHEN g.winner_id = p.id AND g.win_type IN ('discard','self_draw') THEN 1 ELSE 0 END), 0) AS wins,
+                       COALESCE(SUM(CASE WHEN g.win_type = 'draw' THEN 1 ELSE 0 END), 0) AS draws
                 FROM players p
                 LEFT JOIN game_scores gs ON gs.player_id = p.id
                 LEFT JOIN games g ON g.id = gs.game_id

@@ -368,10 +368,11 @@ async def post_logged_game(client: discord.Client, embed: discord.Embed):
 
 def _format_leaderboard_lines(rows):
     lines = []
-    for i, (name, total, hands, wins) in enumerate(rows, start=1):
+    for i, (name, total, hands, wins, draws) in enumerate(rows, start=1):
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"#{i}")
         win_rate = round(wins / hands * 100) if hands else 0
-        lines.append(f"{medal} **{name}** : {total} pts · {wins}W / {hands} hands · {win_rate}%")
+        draws_part = f" / {draws}D" if draws else ""
+        lines.append(f"{medal} **{name}** : {total} pts · {wins}W{draws_part} / {hands} hands · {win_rate}%")
     return lines
 
 
@@ -600,25 +601,14 @@ async def refresh_boards(client: discord.Client):
 # Player stat cards
 # ---------------------------------------------------------------------------
 
-_EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]  # index = eighths of a block (0-7)
-
-
-def _faan_bar_block(dist, max_width=18):
-    """dist: list of (faan, count) tuples. Renders a smooth ASCII bar chart
-    using eighth-block characters for finer-grained, more progressive
-    scaling than whole-character bars would allow."""
+def _faan_bar_block(dist):
+    """dist: list of (faan, count) tuples. One block character per count,
+    no scaling -- a count of 16 is literally 16 characters wide."""
     if not dist:
         return "```\n(none yet)\n```"
-    max_count = max(c for _, c in dist)
     lines = []
     for faan, count in dist:
-        if max_count:
-            total_eighths = round(count / max_count * max_width * 8)
-            total_eighths = max(total_eighths, 1)  # any nonzero count gets at least a sliver
-        else:
-            total_eighths = 8
-        full_blocks, remainder = divmod(total_eighths, 8)
-        bar = "█" * full_blocks + _EIGHTHS[remainder]
+        bar = "█" * count
         lines.append(f"{faan:>2} faan │ {bar} {count}")
     return "```\n" + "\n".join(lines) + "\n```"
 

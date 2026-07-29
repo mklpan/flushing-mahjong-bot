@@ -375,7 +375,16 @@ def _format_leaderboard_lines(rows):
     return lines
 
 
-async def build_leaderboard_embed(season: dict = None):
+async def build_leaderboard_embed(season: dict = None, lifetime: bool = False):
+    if lifetime:
+        title = f"🏆 {CLUB_NAME} — Lifetime Leaderboard"
+        rows = await db.get_leaderboard(None)
+        embed = discord.Embed(title=title, color=discord.Color.gold())
+        embed.description = "\n".join(_format_leaderboard_lines(rows)) if rows else "No games logged yet. 🀄"
+        embed.set_footer(text="Updates automatically after every logged game — all seasons combined")
+        embed.timestamp = datetime.datetime.now()
+        return embed
+
     if season is None:
         season = await db.get_active_season()
     if season:
@@ -418,44 +427,93 @@ async def build_season_list_embed():
     return embed
 
 
+HOF_MEDALS = ["🥇", "🥈", "🥉"]
+
+
 async def build_hall_of_fame_embed():
+    """Top 10 from every COMPLETED season (the current in-progress season
+    is deliberately excluded until it ends)."""
     seasons = await db.get_all_seasons()
+    finished_seasons = [s for s in seasons if not s["is_active"]]
+
     embed = discord.Embed(title=f"🏛️ {CLUB_NAME} — Hall of Fame", color=discord.Color.dark_gold())
-    if not seasons:
-        embed.description = "No seasons yet."
+    if not finished_seasons:
+        embed.description = "No completed seasons yet — check back once the current season ends!"
+        embed.set_footer(text="Updates automatically")
         return embed
 
     lines = []
-    medals = ["🥇", "🥈", "🥉"]
-    for s in reversed(seasons):  # most recent first
+    for s in reversed(finished_seasons):  # most recent completed season first
         rows = await db.get_leaderboard(s["id"])
-        header = f"**Season {s['number']} — {s['name']}**" + (" 🟢" if s["is_active"] else "")
+        header = f"**Season {s['number']} — {s['name']}**"
         if not rows:
             lines.append(f"{header}\n_no games logged_")
         else:
-            top3 = rows[:3]
-            entries = [f"{medals[i]} {name} — {total} pts" for i, (name, total, hands, wins) in enumerate(top3)]
+            top10 = rows[:10]
+            entries = []
+            for i, (name, total, hands, wins) in enumerate(top10):
+                rank_marker = HOF_MEDALS[i] if i < 3 else f"#{i+1}"
+                entries.append(f"{rank_marker} {name} — {total} pts")
             lines.append(header + "\n" + "\n".join(entries))
     embed.description = "\n\n".join(lines)
+    embed.set_footer(text="Updates automatically — a season appears here once it ends")
+    embed.timestamp = datetime.datetime.now()
     return embed
 
 
 async def update_live_leaderboard(client: discord.Client):
-    """Best-effort refresh of the pinned live leaderboard message, if one
-    has been set up via /setup-leaderboard. Silently does nothing if not
-    configured, and swallows errors so a leaderboard problem never breaks
-    game logging."""
+    """Best-effort refresh of the pinned live season leaderboard message,
+    if one has been set up via /setup-leaderboard. Silently does nothing
+    if not configured, and swallows errors so a leaderboard problem never
+    breaks game logging."""
     channel_id = await db.get_setting("leaderboard_channel_id")
     message_id = await db.get_setting("leaderboard_message_id")
-    if not channel_id or not message_id:
-        return
-    try:
-        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
-        message = await channel.fetch_message(int(message_id))
-        embed = await build_leaderboard_embed()
-        await message.edit(embed=embed)
-    except Exception:
-        pass
+    if channel_id and message_id:
+        try:
+            channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            embed = await build_leaderboard_embed()
+            await message.edit(embed=embed)
+        except Exception:
+            pass
+
+
+async def update_live_lifetime_leaderboard(client: discord.Client):
+    """Same idea as update_live_leaderboard, but for the lifetime board
+    set up via /setup-leaderboard-lifetime."""
+    channel_id = await db.get_setting("lifetime_leaderboard_channel_id")
+    message_id = await db.get_setting("lifetime_leaderboard_message_id")
+    if channel_id and message_id:
+        try:
+            channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            embed = await build_leaderboard_embed(lifetime=True)
+            await message.edit(embed=embed)
+        except Exception:
+            pass
+
+
+async def update_live_hall_of_fame(client: discord.Client):
+    """Same idea, for the Hall of Fame board set up via /setup-hall-of-fame."""
+    channel_id = await db.get_setting("hof_channel_id")
+    message_id = await db.get_setting("hof_message_id")
+    if channel_id and message_id:
+        try:
+            channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            embed = await build_hall_of_fame_embed()
+            await message.edit(embed=embed)
+        except Exception:
+            pass
+
+
+async def refresh_boards(client: discord.Client):
+    """Refreshes every live board that's been set up: season leaderboard,
+    lifetime leaderboard, and hall of fame. Call this anywhere a game is
+    logged, edited, or deleted, or a season starts/ends."""
+    await update_live_leaderboard(client)
+    await update_live_lifetime_leaderboard(client)
+    await update_live_hall_of_fame(client)
 
 
 # ---------------------------------------------------------------------------

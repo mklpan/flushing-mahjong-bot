@@ -79,6 +79,32 @@ async def setup_leaderboard(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="setup-leaderboard-lifetime", description="Post a live-updating lifetime leaderboard (all seasons combined) in this channel")
+@app_commands.default_permissions(manage_guild=True)
+async def setup_leaderboard_lifetime(interaction: discord.Interaction):
+    embed = await game_actions.build_leaderboard_embed(lifetime=True)
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    await db.set_setting("lifetime_leaderboard_channel_id", str(interaction.channel_id))
+    await db.set_setting("lifetime_leaderboard_message_id", str(message.id))
+    await interaction.followup.send(
+        "This message will now auto-update after every logged game, across all seasons.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="setup-hall-of-fame", description="Post a live-updating Hall of Fame (top 10 from every completed season) in this channel")
+@app_commands.default_permissions(manage_guild=True)
+async def setup_hall_of_fame(interaction: discord.Interaction):
+    embed = await game_actions.build_hall_of_fame_embed()
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    await db.set_setting("hof_channel_id", str(interaction.channel_id))
+    await db.set_setting("hof_message_id", str(message.id))
+    await interaction.followup.send(
+        "This message will now auto-update whenever a season ends or past results change.", ephemeral=True
+    )
+
+
 @bot.tree.command(name="setup-modtools", description="Post the mod tools panel in this channel")
 @app_commands.default_permissions(manage_guild=True)
 async def setup_modtools(interaction: discord.Interaction):
@@ -121,6 +147,12 @@ async def leaderboard(interaction: discord.Interaction, season_number: int = Non
         embed = await game_actions.build_leaderboard_embed(season)
     else:
         embed = await game_actions.build_leaderboard_embed()
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="leaderboard-lifetime", description="Show the all-time leaderboard across every season")
+async def leaderboard_lifetime(interaction: discord.Interaction):
+    embed = await game_actions.build_leaderboard_embed(lifetime=True)
     await interaction.response.send_message(embed=embed)
 
 

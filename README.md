@@ -17,14 +17,17 @@ running leaderboard, and showing player stats. Scoring follows the
 - `/stats [player]` — full stat card (current season **and** lifetime)
 - `/recent-games` — last 10 games logged
 - `/season-list` — every season this club has had, with its date range and current-season marker
-- `/hall-of-fame` — top 3 finishers from every season, most recent first
+- `/hall-of-fame` — top 10 finishers from every **completed** season (the current in-progress season doesn't appear until it ends)
+- `/leaderboard-lifetime` — all-time standings across every season combined
 - `/ping` — check the bot is alive
 
 **Mods only** (require "Manage Server" by default — restrict further via **Server Settings → Integrations**):
 - `/setup-loggame` — post the persistent Log Game button (do this once)
-- `/setup-leaderboard` — post the live-updating leaderboard (do this once)
+- `/setup-leaderboard` — post the live-updating season leaderboard (do this once)
+- `/setup-leaderboard-lifetime` — post a live-updating all-time leaderboard (do this once)
+- `/setup-hall-of-fame` — post a live-updating Hall of Fame (do this once)
 - `/setup-gamelog` — set this channel as where every logged game's card gets posted (do this once)
-- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Season Dates, Export CSV
+- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Edit Season, Export CSV
 
 ### One-time setup checklist
 
@@ -32,7 +35,9 @@ Run these once, each in the channel you want them to live in:
 1. `/setup-loggame` in your game-logging channel
 2. `/setup-gamelog` in your game-history channel (can be the same channel or different)
 3. `/setup-leaderboard` in your leaderboard channel
-4. `/setup-modtools` in a mod-only channel
+4. `/setup-leaderboard-lifetime` in a channel for the all-time board (can be the same channel)
+5. `/setup-hall-of-fame` in a channel for completed-season results
+6. `/setup-modtools` in a mod-only channel
 
 ### Delete / Edit Game
 
@@ -45,7 +50,7 @@ Both now work by picking from a dropdown list of the 25 most recent games (label
 
 Each season has a **number** and a **name** (e.g. "Season 2 (Fall 2026)"), shown in the leaderboard title and on player stat cards. The **New Season** button lets a mod set both explicitly (or leave the number blank to auto-increment), plus optional start/end dates. Past games stay tied to their original season permanently, so `/stats` always shows accurate season *and* lifetime numbers.
 
-**When a new season starts, the old leaderboard message is automatically deleted from the channel** to keep things tidy — nothing is lost, it's just no longer cluttering the channel. Past seasons remain fully viewable via `/leaderboard <season_number>`, `/hall-of-fame` (top 3 from every season), `/season-list`, and the CSV export (which now includes season number/name columns for filtering in Power BI/Tableau).
+**When a new season starts, the old leaderboard message is automatically deleted from the channel** to keep things tidy — nothing is lost, it's just no longer cluttering the channel. Past seasons remain fully viewable via `/leaderboard <season_number>`, `/hall-of-fame` (top 10 from every completed season), `/leaderboard-lifetime`, `/season-list`, and the CSV export (which now includes season number/name columns for filtering in Power BI/Tableau).
 
 ### Season date locking
 

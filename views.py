@@ -86,7 +86,7 @@ async def _finish_log_flow(interaction: discord.Interaction, result: dict):
     if not posted:
         await interaction.channel.send(embed=result["embed"])
 
-    await game_actions.update_live_leaderboard(interaction.client)
+    await game_actions.refresh_boards(interaction.client)
 
     try:
         await interaction.delete_original_response()
@@ -578,7 +578,7 @@ class ConfirmDeleteView(discord.ui.View):
             await interaction.response.edit_message(content="Already deleted.", view=None)
             return
         await db.delete_game(self.game_id)
-        await game_actions.update_live_leaderboard(interaction.client)
+        await game_actions.refresh_boards(interaction.client)
         lines = [f"{name}: {points:+d}" for name, points in game["scores"]]
         hand_ref = f"S{game['season_number']}-H{game['season_game_number']}" if game["season_number"] is not None else f"H{self.game_id}"
         await interaction.response.edit_message(
@@ -655,6 +655,10 @@ class NewSeasonModal(discord.ui.Modal, title="Start a New Season"):
             except Exception:
                 posted_note = " (Couldn't auto-post a new leaderboard message -- check the leaderboard channel is still valid.)"
 
+        # The season that just ended is now eligible for the Hall of Fame.
+        await game_actions.update_live_hall_of_fame(interaction.client)
+        await game_actions.update_live_lifetime_leaderboard(interaction.client)
+
         await interaction.response.send_message(
             f"🎉 New season started: **{name}**.{posted_note} Use `/hall-of-fame` to see top finishers from every past season.",
             ephemeral=True,
@@ -698,7 +702,7 @@ class EditSeasonModal(discord.ui.Modal, title="Edit Current Season"):
         end_date = self.end_date_input.value.strip() or None
 
         await db.update_season_info(self.season["id"], name, number, start_date, end_date)
-        await game_actions.update_live_leaderboard(interaction.client)
+        await game_actions.refresh_boards(interaction.client)
 
         lock_desc = "no date lock" if not (start_date or end_date) else f"{start_date or 'open'} → {end_date or 'open'}"
         await interaction.response.send_message(

@@ -164,6 +164,18 @@ async def stats(interaction: discord.Interaction, player: discord.Member = None)
     await interaction.response.send_message(embeds=embeds)
 
 
+@bot.tree.command(name="head-to-head", description="Compare two players' record against each other")
+@app_commands.describe(player_a="First player", player_b="Second player")
+async def head_to_head(interaction: discord.Interaction, player_a: discord.Member, player_b: discord.Member):
+    if player_a.id == player_b.id:
+        await interaction.response.send_message("Pick two different players.", ephemeral=True)
+        return
+    embeds = await game_actions.build_head_to_head_embeds(
+        str(player_a.id), player_a.display_name, str(player_b.id), player_b.display_name
+    )
+    await interaction.response.send_message(embeds=embeds)
+
+
 @bot.tree.command(name="game-history", description="Show a player's game history for the current season")
 @app_commands.describe(player="Player to look up (defaults to you)")
 async def game_history(interaction: discord.Interaction, player: discord.Member = None):

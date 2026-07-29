@@ -505,6 +505,42 @@ async def build_player_history_embed(discord_id: str, display_name: str, limit: 
     return embed
 
 
+async def _build_single_h2h_embed(id_a, name_a, id_b, name_b, season_id, scope_label):
+    shared = await db.get_shared_games(id_a, id_b, season_id)
+    embed = discord.Embed(title=f"⚔️ {name_a} vs {name_b}", color=discord.Color.blue())
+    embed.set_author(name=scope_label)
+
+    if shared["games_together"] == 0:
+        embed.description = "They haven't been seated in a hand together yet in this scope."
+        return embed
+
+    stats_a = await db.get_player_full_stats(id_a, season_id)
+    stats_b = await db.get_player_full_stats(id_b, season_id)
+    a_fed_by_b = stats_a["fed_by_all"].get(name_b, 0) if stats_a else 0
+    b_fed_by_a = stats_b["fed_by_all"].get(name_a, 0) if stats_b else 0
+
+    embed.add_field(name="Hands together", value=str(shared["games_together"]), inline=True)
+    embed.add_field(name=f"{name_a} wins", value=str(shared["wins_a"]), inline=True)
+    embed.add_field(name=f"{name_b} wins", value=str(shared["wins_b"]), inline=True)
+
+    embed.add_field(name=f"{name_a} won directly off {name_b}", value=f"{a_fed_by_b} pts", inline=True)
+    embed.add_field(name=f"{name_b} won directly off {name_a}", value=f"{b_fed_by_a} pts", inline=True)
+
+    return embed
+
+
+async def build_head_to_head_embeds(id_a, name_a, id_b, name_b):
+    """Returns a list of 2 embeds: current season, then lifetime."""
+    season = await db.get_active_season()
+    season_label = f"Season {season['number']} ({season['name']})" if season else "Current Season"
+    season_id = season["id"] if season else None
+
+    return [
+        await _build_single_h2h_embed(id_a, name_a, id_b, name_b, season_id, season_label),
+        await _build_single_h2h_embed(id_a, name_a, id_b, name_b, None, "Lifetime"),
+    ]
+
+
 async def update_live_leaderboard(client: discord.Client):
     """Best-effort refresh of the pinned live season leaderboard message,
     if one has been set up via /setup-leaderboard. Silently does nothing
@@ -564,16 +600,25 @@ async def refresh_boards(client: discord.Client):
 # Player stat cards
 # ---------------------------------------------------------------------------
 
+_EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]  # index = eighths of a block (0-7)
+
+
 def _faan_bar_block(dist, max_width=18):
-    """dist: list of (faan, count) tuples. Renders a clean ASCII bar chart
-    styled after the club's original faan-distribution graphic."""
+    """dist: list of (faan, count) tuples. Renders a smooth ASCII bar chart
+    using eighth-block characters for finer-grained, more progressive
+    scaling than whole-character bars would allow."""
     if not dist:
         return "```\n(none yet)\n```"
     max_count = max(c for _, c in dist)
     lines = []
     for faan, count in dist:
-        bar_len = max(1, round(count / max_count * max_width)) if max_count else 1
-        bar = "█" * bar_len
+        if max_count:
+            total_eighths = round(count / max_count * max_width * 8)
+            total_eighths = max(total_eighths, 1)  # any nonzero count gets at least a sliver
+        else:
+            total_eighths = 8
+        full_blocks, remainder = divmod(total_eighths, 8)
+        bar = "█" * full_blocks + _EIGHTHS[remainder]
         lines.append(f"{faan:>2} faan │ {bar} {count}")
     return "```\n" + "\n".join(lines) + "\n```"
 

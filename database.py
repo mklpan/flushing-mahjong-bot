@@ -506,6 +506,8 @@ def _compute_player_breakdown(games, player_id):
         "faan_dist_losses": sorted(faan_dist_losses.items()),
         "fed_by": top_n(fed_by),
         "fed_to": top_n(fed_to),
+        "fed_by_all": fed_by,
+        "fed_to_all": fed_to,
     }
 
 
@@ -850,6 +852,41 @@ async def get_player_game_history(discord_id: str, season_id: int, limit: int = 
             (discord_id, season_id, limit),
         ) as cur:
             return await cur.fetchall()
+
+
+async def get_shared_games(discord_id_a: str, discord_id_b: str, season_id: int = None):
+    """Games where BOTH players were seated together. Returns
+    {games_together, wins_a, wins_b} scoped to a season if given, or
+    lifetime if season_id is None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id FROM players WHERE discord_id = ?", (discord_id_a,)) as cur:
+            row_a = await cur.fetchone()
+        async with db.execute("SELECT id FROM players WHERE discord_id = ?", (discord_id_b,)) as cur:
+            row_b = await cur.fetchone()
+        if not row_a or not row_b:
+            return {"games_together": 0, "wins_a": 0, "wins_b": 0}
+        player_id_a, player_id_b = row_a[0], row_b[0]
+
+        season_clause = "AND g.season_id = ?" if season_id is not None else ""
+        params = [player_id_a, player_id_b] + ([season_id] if season_id is not None else [])
+
+        async with db.execute(
+            f"""
+            SELECT g.winner_id
+            FROM games g
+            WHERE g.id IN (SELECT game_id FROM game_scores WHERE player_id = ?)
+              AND g.id IN (SELECT game_id FROM game_scores WHERE player_id = ?)
+              {season_clause}
+            """,
+            params,
+        ) as cur:
+            winner_ids = [r[0] for r in await cur.fetchall()]
+
+        return {
+            "games_together": len(winner_ids),
+            "wins_a": sum(1 for w in winner_ids if w == player_id_a),
+            "wins_b": sum(1 for w in winner_ids if w == player_id_b),
+        }
 
 
 async def export_rows():

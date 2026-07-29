@@ -27,13 +27,23 @@ CREATE TABLE IF NOT EXISTS players (
 
 CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp REAL NOT NULL,
+    timestamp REAL NOT NULL,      -- when it was logged (for ordering/recent-games)
+    game_date TEXT,               -- user-entered date of play, YYYY-MM-DD
     win_type TEXT NOT NULL,       -- 'discard' | 'self_draw' | 'false_win' | 'draw'
     faan INTEGER,                 -- null for draw / false_win
     winner_id INTEGER,            -- null for draw
     discarder_id INTEGER,         -- set only for discard wins
+    season_id INTEGER,            -- which season this game counts toward
     logged_by TEXT NOT NULL,      -- discord_id of whoever ran the command
     notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS seasons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,           -- e.g. "Fall 2026"
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    created_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS game_scores (
@@ -70,6 +80,55 @@ async def _run_migrations(db):
         if "duplicate column" not in str(e).lower():
             raise
 
+    for stmt in (
+        "ALTER TABLE games ADD COLUMN season_id INTEGER",
+        "ALTER TABLE games ADD COLUMN game_date TEXT",
+    ):
+        try:
+            await db.execute(stmt)
+            await db.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+    # Ensure there's always exactly one active season. If none exists yet
+    # (fresh install, or upgrading from a pre-season version of the bot),
+    # create a default one and backfill any existing games into it.
+    async with db.execute("SELECT id FROM seasons WHERE is_active = 1") as cur:
+        active = await cur.fetchone()
+    if not active:
+        cur = await db.execute(
+            "INSERT INTO seasons (name, is_active, created_at, created_by) VALUES (?, 1, ?, ?)",
+            ("Season 1", time.time(), "system"),
+        )
+        season_id = cur.lastrowid
+        await db.execute(
+            "UPDATE games SET season_id = ? WHERE season_id IS NULL", (season_id,)
+        )
+        await db.commit()
+
+
+async def get_active_season():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, name FROM seasons WHERE is_active = 1 LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+            return {"id": row[0], "name": row[1]} if row else None
+
+
+async def create_new_season(name: str, created_by: str) -> int:
+    """Deactivates the current season and starts a new one. Past games
+    stay tied to their original season_id, so history is preserved."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE seasons SET is_active = 0 WHERE is_active = 1")
+        cur = await db.execute(
+            "INSERT INTO seasons (name, is_active, created_at, created_by) VALUES (?, 1, ?, ?)",
+            (name, time.time(), created_by),
+        )
+        await db.commit()
+        return cur.lastrowid
+
 
 async def get_or_create_player(discord_id: str, display_name: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -102,19 +161,23 @@ async def record_game(
     logged_by: str,
     score_deltas: dict,
     notes: str = None,
+    season_id: int = None,
+    game_date: str = None,
 ) -> int:
     """score_deltas: {player_id: points_delta}"""
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """INSERT INTO games
-               (timestamp, win_type, faan, winner_id, discarder_id, logged_by, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (timestamp, game_date, win_type, faan, winner_id, discarder_id, season_id, logged_by, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 time.time(),
+                game_date,
                 win_type,
                 faan,
                 winner_player_id,
                 discarder_player_id,
+                season_id,
                 logged_by,
                 notes,
             ),
@@ -178,21 +241,214 @@ async def get_blacklisted_players():
             return await cur.fetchall()
 
 
-async def get_leaderboard():
-    """Returns list of (display_name, total_points, games_played) sorted desc."""
+async def get_leaderboard(season_id: int = None):
+    """Returns list of (display_name, total_points, games_played, wins) sorted desc.
+    If season_id is given, only counts games from that season."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if season_id is not None:
+            query = """
+                SELECT p.display_name,
+                       COALESCE(SUM(gs.points), 0) AS total,
+                       COUNT(gs.game_id) AS games_played,
+                       COALESCE(SUM(CASE WHEN g.winner_id = p.id AND g.win_type IN ('discard','self_draw') THEN 1 ELSE 0 END), 0) AS wins
+                FROM players p
+                JOIN game_scores gs ON gs.player_id = p.id
+                JOIN games g ON g.id = gs.game_id AND g.season_id = ?
+                GROUP BY p.id
+                ORDER BY total DESC, wins DESC
+            """
+            params = (season_id,)
+        else:
+            query = """
+                SELECT p.display_name,
+                       COALESCE(SUM(gs.points), 0) AS total,
+                       COUNT(gs.game_id) AS games_played,
+                       COALESCE(SUM(CASE WHEN g.winner_id = p.id AND g.win_type IN ('discard','self_draw') THEN 1 ELSE 0 END), 0) AS wins
+                FROM players p
+                LEFT JOIN game_scores gs ON gs.player_id = p.id
+                LEFT JOIN games g ON g.id = gs.game_id
+                GROUP BY p.id
+                ORDER BY total DESC, wins DESC
+            """
+            params = ()
+        async with db.execute(query, params) as cur:
+            return await cur.fetchall()
+
+
+def _compute_player_breakdown(games, player_id):
+    """games: list of dicts {id, win_type, faan, winner_id, discarder_id,
+    scores: [(player_id, display_name, points), ...]} for games the target
+    player participated in. Replicates the original bot's feeding-stat logic:
+    'fed by' / 'fed to' spans discard, self-draw, AND false-win hands."""
+    wins = 0
+    draws = 0
+    false_wins = 0
+    wins_by_type = {"discard": 0, "self_draw": 0}
+    losses_by_type = {"discard": 0, "self_draw": 0}
+    faan_dist_wins = {}
+    faan_dist_losses = {}
+    net_discard_given = 0
+    fed_by = {}  # name -> points others fed this player
+    fed_to = {}  # name -> points this player fed others
+    total_points = 0
+    biggest_win = 0
+    biggest_loss = 0
+
+    for g in games:
+        mine = next((s for s in g["scores"] if s[0] == player_id), None)
+        if not mine:
+            continue
+        my_points = mine[2]
+        total_points += my_points
+
+        is_winner = g["winner_id"] == player_id
+        is_discarder = g["discarder_id"] == player_id
+
+        if g["win_type"] == "draw":
+            draws += 1
+            continue  # draws involve no points/feeding at all
+
+        if g["win_type"] == "false_win":
+            if is_winner:  # "winner_id" stores the false-win caller
+                false_wins += 1
+            # Deliberately NOT `continue` here -- false-win payouts still
+            # count toward the feeding stats below (matches the original
+            # bot's behavior: fed-by/fed-to spans all three hand types).
+        else:
+            # discard / self_draw hands only
+            if is_winner:
+                wins += 1
+                biggest_win = max(biggest_win, my_points)
+                if g["faan"] is not None:
+                    faan_dist_wins[g["faan"]] = faan_dist_wins.get(g["faan"], 0) + 1
+                wins_by_type["discard" if g["win_type"] == "discard" else "self_draw"] += 1
+            elif my_points < 0:
+                biggest_loss = min(biggest_loss, my_points)
+                if g["faan"] is not None:
+                    faan_dist_losses[g["faan"]] = faan_dist_losses.get(g["faan"], 0) + 1
+                losses_by_type["discard" if g["win_type"] == "discard" else "self_draw"] += 1
+                if g["win_type"] == "discard" and is_discarder:
+                    net_discard_given += -my_points
+
+        # Feeding relationships -- runs for discard, self_draw, AND false_win
+        # hands (matches the original bot's logic exactly).
+        positives = [s for s in g["scores"] if s[2] > 0]
+        negatives = [s for s in g["scores"] if s[2] < 0]
+        if my_points > 0:
+            if len(positives) == 1:
+                for _, name, pts in negatives:
+                    fed_by[name] = fed_by.get(name, 0) + (-pts)
+            elif len(negatives) == 1:
+                name = negatives[0][1]
+                fed_by[name] = fed_by.get(name, 0) + my_points
+        elif my_points < 0:
+            if len(negatives) == 1:
+                for _, name, pts in positives:
+                    fed_to[name] = fed_to.get(name, 0) + pts
+            elif len(positives) == 1:
+                name = positives[0][1]
+                fed_to[name] = fed_to.get(name, 0) + (-my_points)
+
+    hands = sum(1 for g in games if any(s[0] == player_id for s in g["scores"]))
+    win_rate = (wins / hands * 100) if hands else 0
+    avg_per_hand = (total_points / hands) if hands else 0
+
+    top_n = lambda d: sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:5]
+
+    return {
+        "hands": hands,
+        "wins": wins,
+        "draws": draws,
+        "false_wins": false_wins,
+        "win_rate": win_rate,
+        "avg_per_hand": avg_per_hand,
+        "total_points": total_points,
+        "biggest_win": biggest_win,
+        "biggest_loss": biggest_loss,
+        "net_discard_given": net_discard_given,
+        "wins_by_type": wins_by_type,
+        "losses_by_type": losses_by_type,
+        "faan_dist_wins": sorted(faan_dist_wins.items()),
+        "faan_dist_losses": sorted(faan_dist_losses.items()),
+        "fed_by": top_n(fed_by),
+        "fed_to": top_n(fed_to),
+    }
+
+
+async def _fetch_scoped_games_for_player(db, player_id: int, season_id: int = None):
+    """Fetch every game this player was seated in (optionally scoped to a
+    season), each with the full 4-player score breakdown needed for the
+    feeding-stat calculation."""
+    if season_id is not None:
+        game_id_query = """
+            SELECT DISTINCT g.id, g.win_type, g.faan, g.winner_id, g.discarder_id
+            FROM games g
+            JOIN game_scores gs ON gs.game_id = g.id
+            WHERE gs.player_id = ? AND g.season_id = ?
+        """
+        params = (player_id, season_id)
+    else:
+        game_id_query = """
+            SELECT DISTINCT g.id, g.win_type, g.faan, g.winner_id, g.discarder_id
+            FROM games g
+            JOIN game_scores gs ON gs.game_id = g.id
+            WHERE gs.player_id = ?
+        """
+        params = (player_id,)
+
+    async with db.execute(game_id_query, params) as cur:
+        game_rows = await cur.fetchall()
+
+    games = []
+    for game_id, win_type, faan, winner_id, discarder_id in game_rows:
+        async with db.execute(
+            """SELECT p.id, p.display_name, gs.points
+               FROM game_scores gs JOIN players p ON p.id = gs.player_id
+               WHERE gs.game_id = ?""",
+            (game_id,),
+        ) as cur:
+            scores = await cur.fetchall()
+        games.append(
+            {
+                "id": game_id,
+                "win_type": win_type,
+                "faan": faan,
+                "winner_id": winner_id,
+                "discarder_id": discarder_id,
+                "scores": scores,
+            }
+        )
+    return games
+
+
+async def get_player_full_stats(discord_id: str, season_id: int = None):
+    """Full stat card data for one player, scoped to a season if given,
+    or lifetime if season_id is None."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            """
-            SELECT p.display_name,
-                   COALESCE(SUM(gs.points), 0) AS total,
-                   COUNT(gs.game_id) AS games_played
-            FROM players p
-            LEFT JOIN game_scores gs ON gs.player_id = p.id
-            GROUP BY p.id
-            ORDER BY total DESC
-            """
+            "SELECT id, display_name FROM players WHERE discord_id = ?", (discord_id,)
         ) as cur:
-            return await cur.fetchall()
+            row = await cur.fetchone()
+        if not row:
+            return None
+        player_id, display_name = row
+
+        games = await _fetch_scoped_games_for_player(db, player_id, season_id)
+        if not games:
+            return {"display_name": display_name, "hands": 0}
+
+        breakdown = _compute_player_breakdown(games, player_id)
+        breakdown["display_name"] = display_name
+
+        # Rank within this scope
+        board = await get_leaderboard(season_id)
+        names_ranked = [row[0] for row in board]
+        breakdown["rank"] = (
+            names_ranked.index(display_name) + 1 if display_name in names_ranked else None
+        )
+        breakdown["total_in_scope"] = len(names_ranked)
+
+        return breakdown
 
 
 async def get_player_stats(discord_id: str):

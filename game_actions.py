@@ -1,6 +1,7 @@
 """
-Shared game-logging logic used by both the /log-game slash command and the
-button + modal UI, so scoring/validation lives in exactly one place.
+Shared game-logging and embed-formatting logic used by both the slash
+commands and the button/modal UI, so scoring/validation/formatting all
+live in exactly one place.
 """
 
 import datetime
@@ -9,6 +10,19 @@ import discord
 import database as db
 import scoring
 
+CLUB_NAME = "Flushing Mahjong League"
+
+WIN_TYPE_LABELS = {
+    "discard": "Discard",
+    "self_draw": "Self-Draw",
+    "false_win": "False Win",
+    "draw": "Draw",
+}
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
 async def perform_log_game(
     seated,
@@ -19,6 +33,7 @@ async def perform_log_game(
     false_win_caller=None,
     notes: str = None,
     logged_by_id: str = None,
+    game_date: str = None,
 ):
     """seated: list of 4 discord.Member (or User) objects.
     Returns {"ok": True, "game_id": int, "embed": discord.Embed}
@@ -27,13 +42,12 @@ async def perform_log_game(
     if len(set(m.id for m in seated)) != 4:
         return {"ok": False, "error": "All 4 seats must be different players."}
 
-    # Blacklist check
     for m in seated:
         if await db.is_blacklisted(str(m.id)):
             return {
                 "ok": False,
                 "error": f"{m.display_name} is blacklisted from logging games. "
-                "Ask a mod to `/unblacklist` them first.",
+                "Ask a mod to unblacklist them first.",
             }
 
     try:
@@ -70,7 +84,6 @@ async def perform_log_game(
     except scoring.ScoringError as e:
         return {"ok": False, "error": str(e)}
 
-    # Register/refresh all 4 players
     player_ids = {}
     for m in seated:
         player_ids[m.id] = await db.get_or_create_player(str(m.id), m.display_name)
@@ -103,6 +116,9 @@ async def perform_log_game(
 
     # draw: deltas stay 0
 
+    season = await db.get_active_season()
+    season_id = season["id"] if season else None
+
     game_id = await db.record_game(
         win_type=win_type,
         faan=faan if win_type in ("discard", "self_draw") else None,
@@ -111,47 +127,122 @@ async def perform_log_game(
         logged_by=logged_by_id or "unknown",
         score_deltas=deltas,
         notes=notes,
+        season_id=season_id,
+        game_date=game_date,
     )
 
-    win_type_labels = {
-        "discard": "Discard win",
-        "self_draw": "Self-draw win",
-        "false_win": "False win",
-        "draw": "Draw (void hand)",
-    }
+    resolved_winner = winner
+    if win_type == "false_win":
+        resolved_winner = false_win_caller
 
-    embed = discord.Embed(
-        title=f"Game #{game_id} logged",
-        color=discord.Color.green(),
-        timestamp=datetime.datetime.now(),
+    embed = build_logged_game_embed(
+        game_id=game_id,
+        win_type=win_type,
+        faan=faan,
+        game_date=game_date,
+        seated=seated,
+        deltas={m: deltas[player_ids[m.id]] for m in seated},
+        winner=resolved_winner,
+        discarder=discarder if win_type == "discard" else None,
+        logged_by_name=logged_by_id,
+        notes=notes,
     )
-    embed.add_field(name="Seats", value=", ".join(m.display_name for m in seated), inline=False)
-    embed.add_field(name="Result", value=win_type_labels[win_type], inline=True)
-    if faan is not None:
-        embed.add_field(name="Faan", value=str(faan), inline=True)
-
-    lines = []
-    for m in seated:
-        pid = player_ids[m.id]
-        d = deltas[pid]
-        sign = "+" if d >= 0 else ""
-        lines.append(f"{m.display_name}: {sign}{d}")
-    embed.add_field(name="Points", value="\n".join(lines), inline=False)
 
     return {"ok": True, "game_id": game_id, "embed": embed}
 
 
-async def build_leaderboard_embed():
-    rows = await db.get_leaderboard()
-    embed = discord.Embed(title="🏆 Mahjong Club Leaderboard", color=discord.Color.gold())
-    if not rows:
-        embed.description = "No games logged yet. 🀄"
-        return embed
+def build_logged_game_embed(
+    game_id, win_type, faan, game_date, seated, deltas, winner, discarder, logged_by_name, notes
+):
+    """Matches the club's 'Logged H###' card format."""
+    embed = discord.Embed(
+        title=f"🀄 Logged H{game_id}",
+        color=discord.Color.green(),
+    )
+
+    if winner is not None:
+        winner_points = deltas[winner]
+        sign = "+" if winner_points >= 0 else ""
+        embed.add_field(name="Winner", value=f"{winner.display_name} ({sign}{winner_points})", inline=True)
+    if faan is not None:
+        embed.add_field(name="Faan", value=str(faan), inline=True)
+    embed.add_field(name="Win Type", value=WIN_TYPE_LABELS.get(win_type, win_type), inline=True)
+
+    embed.add_field(name="Date", value=game_date or datetime.date.today().isoformat(), inline=True)
+    if discarder is not None:
+        embed.add_field(name="Discarder", value=discarder.display_name, inline=True)
+
     lines = []
-    for i, (name, total, games_played) in enumerate(rows, start=1):
-        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-        lines.append(f"{medal} **{name}** — {total} pts ({games_played} games)")
-    embed.description = "\n".join(lines)
+    for m in seated:
+        d = deltas[m]
+        sign = "+" if d >= 0 else ""
+        if win_type == "false_win":
+            if m == winner:
+                lines.append(f"🚩 {m.display_name} — false win ({sign}{d})")
+            else:
+                lines.append(f"💰 {m.display_name} — fed ({sign}{d})")
+        elif win_type == "draw":
+            lines.append(f"🤝 {m.display_name} — draw (+0)")
+        elif m == winner:
+            lines.append(f"🏆 {m.display_name} — win ({sign}{d})")
+        elif d == 0:
+            lines.append(f"🛡️ {m.display_name} — safe (+0)")
+        else:
+            lines.append(f"💸 {m.display_name} — loss ({sign}{d})")
+    embed.add_field(name="Results", value="\n".join(lines), inline=False)
+
+    if notes:
+        embed.add_field(name="Notes", value=notes, inline=False)
+
+    footer_name = logged_by_name or "unknown"
+    embed.set_footer(text=f"Logged by {footer_name}")
+    embed.timestamp = datetime.datetime.now()
+    return embed
+
+
+async def post_logged_game(client: discord.Client, embed: discord.Embed):
+    """Posts the logged-game card into the configured game-log channel, if
+    one has been set up. Returns True if posted, False otherwise (e.g. not
+    configured) -- callers should fall back to posting inline if False."""
+    channel_id = await db.get_setting("gamelog_channel_id")
+    if not channel_id:
+        return False
+    try:
+        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+        await channel.send(embed=embed)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Leaderboard
+# ---------------------------------------------------------------------------
+
+def _format_leaderboard_lines(rows):
+    lines = []
+    for i, (name, total, hands, wins) in enumerate(rows, start=1):
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"#{i}")
+        win_rate = round(wins / hands * 100) if hands else 0
+        lines.append(f"{medal} **{name}** : {total} pts · {wins}W / {hands} hands · {win_rate}%")
+    return lines
+
+
+async def build_leaderboard_embed(season: dict = None):
+    if season is None:
+        season = await db.get_active_season()
+    season_name = season["name"] if season else "Current Season"
+    season_id = season["id"] if season else None
+
+    rows = await db.get_leaderboard(season_id)
+    embed = discord.Embed(
+        title=f"🏆 {CLUB_NAME} — {season_name} Leaderboard",
+        color=discord.Color.gold(),
+    )
+    if not rows:
+        embed.description = "No games logged yet this season. 🀄"
+    else:
+        embed.description = "\n".join(_format_leaderboard_lines(rows))
     embed.set_footer(text="Updates automatically after every logged game")
     embed.timestamp = datetime.datetime.now()
     return embed
@@ -160,19 +251,111 @@ async def build_leaderboard_embed():
 async def update_live_leaderboard(client: discord.Client):
     """Best-effort refresh of the pinned live leaderboard message, if one
     has been set up via /setup-leaderboard. Silently does nothing if not
-    configured, and swallows errors (e.g. message/channel deleted) so a
-    leaderboard problem never breaks game logging."""
+    configured, and swallows errors so a leaderboard problem never breaks
+    game logging."""
     channel_id = await db.get_setting("leaderboard_channel_id")
     message_id = await db.get_setting("leaderboard_message_id")
     if not channel_id or not message_id:
         return
-
     try:
         channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
         message = await channel.fetch_message(int(message_id))
         embed = await build_leaderboard_embed()
         await message.edit(embed=embed)
     except Exception:
-        # Message/channel may have been deleted, or permissions changed.
-        # Don't let this break the actual game-logging flow.
         pass
+
+
+# ---------------------------------------------------------------------------
+# Player stat cards
+# ---------------------------------------------------------------------------
+
+def _faan_bar_block(dist, max_width=20):
+    """dist: list of (faan, count) tuples. Renders a simple ASCII bar chart."""
+    if not dist:
+        return "_none yet_"
+    max_count = max(c for _, c in dist)
+    lines = []
+    for faan, count in dist:
+        bar_len = max(1, round(count / max_count * max_width)) if max_count else 1
+        bar = "▓" * bar_len
+        lines.append(f"{faan:>2} faan | {bar} {count}")
+    return "```\n" + "\n".join(lines) + "\n```"
+
+
+def _rank_list(pairs):
+    if not pairs:
+        return "_none yet_"
+    return "\n".join(f"{i+1}. **{name}** — {points} pts" for i, (name, points) in enumerate(pairs))
+
+
+def _build_single_card_embed(stats: dict, scope_label: str):
+    name = stats["display_name"]
+    embed = discord.Embed(title=f"🀄 Player Card — {name}", color=discord.Color.blue())
+    embed.set_author(name=scope_label)
+
+    if stats.get("hands", 0) == 0:
+        embed.description = "No games logged yet in this scope."
+        return embed
+
+    rank_str = f"Rank #{stats['rank']}" if stats.get("rank") else "Unranked"
+    embed.description = f"**{rank_str}** · {stats['total_points']} total points"
+
+    embed.add_field(name="Hands", value=str(stats["hands"]), inline=True)
+    embed.add_field(name="Wins", value=str(stats["wins"]), inline=True)
+    embed.add_field(name="Win rate", value=f"{stats['win_rate']:.0f}%", inline=True)
+
+    embed.add_field(name="Avg / hand", value=f"{stats['avg_per_hand']:.1f}", inline=True)
+    embed.add_field(name="Biggest win", value=f"+{stats['biggest_win']}", inline=True)
+    embed.add_field(name="Biggest loss", value=str(stats["biggest_loss"]), inline=True)
+
+    embed.add_field(name="Net discard given", value=str(stats["net_discard_given"]), inline=True)
+    embed.add_field(name="Draws", value=str(stats["draws"]), inline=True)
+    embed.add_field(name="False wins", value=str(stats["false_wins"]), inline=True)
+
+    wbt = stats["wins_by_type"]
+    lbt = stats["losses_by_type"]
+    embed.add_field(
+        name="🏆 Wins",
+        value=f"Discard: **{wbt['discard']}**\nSelf-draw: **{wbt['self_draw']}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="💸 Losses",
+        value=f"Discard: **{lbt['discard']}**\nSelf-draw: **{lbt['self_draw']}**",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer for 3-column layout
+
+    embed.add_field(name="Faan distribution (wins)", value=_faan_bar_block(stats["faan_dist_wins"]), inline=False)
+    embed.add_field(name="Faan distribution (losses)", value=_faan_bar_block(stats["faan_dist_losses"]), inline=False)
+
+    embed.add_field(name="🍚 Fed most by", value=_rank_list(stats["fed_by"]), inline=True)
+    embed.add_field(name="🎯 Fed the most to", value=_rank_list(stats["fed_to"]), inline=True)
+
+    return embed
+
+
+async def build_player_card_embeds(discord_id: str, fallback_name: str):
+    """Returns a list of 1-2 embeds: current season, then lifetime."""
+    season = await db.get_active_season()
+    season_stats = await db.get_player_full_stats(discord_id, season["id"] if season else None)
+    lifetime_stats = await db.get_player_full_stats(discord_id, None)
+
+    if season_stats is None and lifetime_stats is None:
+        embed = discord.Embed(
+            title=f"🀄 Player Card — {fallback_name}",
+            description="No games logged yet.",
+            color=discord.Color.blue(),
+        )
+        return [embed]
+
+    season_stats = season_stats or {"display_name": fallback_name, "hands": 0}
+    lifetime_stats = lifetime_stats or {"display_name": fallback_name, "hands": 0}
+    season_name = season["name"] if season else "Current Season"
+
+    embeds = [
+        _build_single_card_embed(season_stats, f"Season: {season_name}"),
+        _build_single_card_embed(lifetime_stats, "Lifetime"),
+    ]
+    return embeds

@@ -11,31 +11,43 @@ running leaderboard, and showing player stats. Scoring follows the
 ## Commands
 
 **Everyone:**
-- `/log-game` — log a completed hand via slash command (4 seated players, win type, faan, etc.)
-- `/leaderboard` — show total points, ranked
-- `/stats [player]` — games played, win rate, avg winning faan, etc.
+- Click the **Log Game** button (posted via `/setup-loggame`) — walks you through date/notes → faan/win type/players → winner/discarder, matching your club's exact workflow
+- `/log-game` — same flow, but reachable without the button being visible
+- `/leaderboard` — current season's standings
+- `/stats [player]` — full stat card (current season **and** lifetime), including faan distributions, feeding stats, net discard given, and draw count
 - `/recent-games` — last 10 games logged
+- `/season-info` — see the current active season's name
 - `/ping` — check the bot is alive
-- Clicking the **Log Game button** (posted via `/setup`) — same as `/log-game` but with dropdowns instead of typing
 
-**Mods only** (require the "Manage Server" Discord permission by default — see *Restricting mod commands* below):
-- `/setup` — post the persistent Log Game button in the current channel (do this once)
-- `/setup-leaderboard` — post a leaderboard message that auto-updates after every game (do this once)
-- `/delete-game <game_id>` — remove a logged game and reverse its points
-- `/edit-game <game_id> <new_faan>` — correct a mis-entered faan count on a discard/self-draw win
-- `/blacklist <player>` / `/unblacklist <player>` — block/unblock a player from being logged in future games
-- `/blacklist-list` — see who's currently blacklisted
-- `/export-csv` — download all logged games as a CSV (one row per player per game) for Power BI, Tableau, or Excel
+**Mods only** (require "Manage Server" by default — restrict further via **Server Settings → Integrations**):
+- `/setup-loggame` — post the persistent Log Game button (do this once)
+- `/setup-leaderboard` — post the live-updating leaderboard (do this once)
+- `/setup-gamelog` — set this channel as where every logged game's card gets posted (do this once)
+- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Export CSV
 
-### Restricting mod commands
+### One-time setup checklist
 
-By default, mod commands require the built-in Discord **"Manage Server"** permission. If you want to grant access to a specific Mod role instead (without giving them full server management), go to your server's **Settings → Integrations → [your bot] → Manage** and set per-command permissions there — no code changes needed.
+Run these once, each in the channel you want them to live in:
+1. `/setup-loggame` in your game-logging channel
+2. `/setup-gamelog` in your game-history channel (can be the same channel or different)
+3. `/setup-leaderboard` in your leaderboard channel
+4. `/setup-modtools` in a mod-only channel
+
+### Seasons
+
+The bot starts with one default season. Mods use the **New Season** button in the mod tools panel to name and start a new season — this archives the current leaderboard message as a historical record and posts a fresh one. All past games stay tied to their original season, so `/stats` can always show both season and lifetime numbers correctly. `/leaderboard` always reflects the currently active season.
+
+### Duplicate-submission protection
+
+The Submit button disables itself the instant it's clicked (before any network calls), so mashing it can't create duplicate entries — the second click is a no-op.
+
+### A note on "Net discard given"
+
+This stat's exact original formula lives in a Google Sheets formula from the prior bot, not in that bot's code, so it wasn't possible to confirm byte-for-byte. It's implemented here as: **total points paid out specifically while in the discarder role** (excludes self-draw losses and false-win penalties). If you check the original spreadsheet formula and it differs, this is a one-line change in `database.py`.
 
 ### Setting up the button and live leaderboard
 
-After deploying (see below), run these once in your server:
-1. In your `#game-log` channel: `/setup` — posts the persistent button
-2. In your `#leaderboard` channel (or wherever you want it): `/setup-leaderboard` — posts the auto-updating leaderboard
+After deploying (see below), run through the **One-time setup checklist** above in your server.
 
 **Note on bot permissions:** `/export-csv` sends a file attachment, which requires the **Attach Files** permission. If you invited the bot before this feature was added, re-generate your invite URL (OAuth2 → URL Generator) with `Attach Files` checked, and re-invite it (existing invites don't retroactively grant new permissions).
 

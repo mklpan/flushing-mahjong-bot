@@ -119,6 +119,19 @@ async def perform_log_game(
     season = await db.get_active_season()
     season_id = season["id"] if season else None
 
+    if season and (season["start_date"] or season["end_date"]):
+        check_date = game_date or datetime.date.today().isoformat()
+        if season["start_date"] and check_date < season["start_date"]:
+            return {
+                "ok": False,
+                "error": f"That date is before the **{season['name']}** season starts ({season['start_date']}).",
+            }
+        if season["end_date"] and check_date > season["end_date"]:
+            return {
+                "ok": False,
+                "error": f"That date is after the **{season['name']}** season ends ({season['end_date']}).",
+            }
+
     game_id = await db.record_game(
         win_type=win_type,
         faan=faan if win_type in ("discard", "self_draw") else None,
@@ -147,6 +160,113 @@ async def perform_log_game(
         logged_by_name=logged_by_id,
         notes=notes,
     )
+
+    return {"ok": True, "game_id": game_id, "embed": embed}
+
+
+async def perform_edit_game(
+    game_id: int,
+    seated,
+    win_type: str,
+    winner=None,
+    faan=None,
+    discarder=None,
+    false_win_caller=None,
+    notes: str = None,
+    game_date: str = None,
+):
+    """Same validation as perform_log_game, but overwrites an existing
+    game in place instead of creating a new one. Does not re-check season
+    date locks (the game may belong to a past, already-closed season)."""
+
+    if len(set(m.id for m in seated)) != 4:
+        return {"ok": False, "error": "All 4 seats must be different players."}
+
+    try:
+        if win_type in ("discard", "self_draw"):
+            if winner is None or faan is None:
+                return {"ok": False, "error": "Discard and self-draw wins require both a winner and a faan count."}
+            if winner not in seated:
+                return {"ok": False, "error": "Winner must be one of the 4 seated players."}
+            scoring.validate_win_faan(faan)
+            faan = scoring.clamp_faan(faan)
+
+        if win_type == "discard":
+            if discarder is None:
+                return {"ok": False, "error": "Discard wins require a discarder."}
+            if discarder not in seated or discarder == winner:
+                return {"ok": False, "error": "Discarder must be one of the other 3 seated players."}
+
+        if win_type == "false_win":
+            if false_win_caller is None or false_win_caller not in seated:
+                return {
+                    "ok": False,
+                    "error": "False wins require the false-win caller to be one of the 4 seated players.",
+                }
+
+        if win_type not in ("discard", "self_draw", "false_win", "draw"):
+            return {"ok": False, "error": f"Unknown win type: {win_type}"}
+
+    except scoring.ScoringError as e:
+        return {"ok": False, "error": str(e)}
+
+    player_ids = {}
+    for m in seated:
+        player_ids[m.id] = await db.get_or_create_player(str(m.id), m.display_name)
+
+    deltas = {player_ids[m.id]: 0 for m in seated}
+    winner_id = discarder_id = None
+
+    if win_type == "discard":
+        result = scoring.score_discard_win(faan)
+        winner_id = player_ids[winner.id]
+        discarder_id = player_ids[discarder.id]
+        deltas[winner_id] += result["winner"]
+        deltas[discarder_id] += result["discarder"]
+
+    elif win_type == "self_draw":
+        result = scoring.score_self_draw_win(faan)
+        winner_id = player_ids[winner.id]
+        deltas[winner_id] += result["winner"]
+        for m in seated:
+            if m.id != winner.id:
+                deltas[player_ids[m.id]] += result["each_opponent"]
+
+    elif win_type == "false_win":
+        result = scoring.score_false_win()
+        winner_id = player_ids[false_win_caller.id]
+        deltas[winner_id] += result["false_winner"]
+        for m in seated:
+            if m.id != false_win_caller.id:
+                deltas[player_ids[m.id]] += result["each_opponent"]
+
+    ok = await db.overwrite_game(
+        game_id=game_id,
+        win_type=win_type,
+        faan=faan if win_type in ("discard", "self_draw") else None,
+        winner_player_id=winner_id,
+        discarder_player_id=discarder_id,
+        notes=notes,
+        game_date=game_date,
+        score_deltas=deltas,
+    )
+    if not ok:
+        return {"ok": False, "error": f"Game #{game_id} no longer exists."}
+
+    resolved_winner = winner if win_type != "false_win" else false_win_caller
+    embed = build_logged_game_embed(
+        game_id=game_id,
+        win_type=win_type,
+        faan=faan,
+        game_date=game_date,
+        seated=seated,
+        deltas={m: deltas[player_ids[m.id]] for m in seated},
+        winner=resolved_winner,
+        discarder=discarder if win_type == "discard" else None,
+        logged_by_name="(edited)",
+        notes=notes,
+    )
+    embed.title = f"✏️ Edited H{game_id}"
 
     return {"ok": True, "game_id": game_id, "embed": embed}
 
@@ -231,14 +351,14 @@ def _format_leaderboard_lines(rows):
 async def build_leaderboard_embed(season: dict = None):
     if season is None:
         season = await db.get_active_season()
-    season_name = season["name"] if season else "Current Season"
+    if season:
+        title = f"🏆 {CLUB_NAME} — Season {season['number']} Leaderboard ({season['name']})"
+    else:
+        title = f"🏆 {CLUB_NAME} — Leaderboard"
     season_id = season["id"] if season else None
 
     rows = await db.get_leaderboard(season_id)
-    embed = discord.Embed(
-        title=f"🏆 {CLUB_NAME} — {season_name} Leaderboard",
-        color=discord.Color.gold(),
-    )
+    embed = discord.Embed(title=title, color=discord.Color.gold())
     if not rows:
         embed.description = "No games logged yet this season. 🀄"
     else:
@@ -270,16 +390,17 @@ async def update_live_leaderboard(client: discord.Client):
 # Player stat cards
 # ---------------------------------------------------------------------------
 
-def _faan_bar_block(dist, max_width=20):
-    """dist: list of (faan, count) tuples. Renders a simple ASCII bar chart."""
+def _faan_bar_block(dist, max_width=18):
+    """dist: list of (faan, count) tuples. Renders a clean ASCII bar chart
+    styled after the club's original faan-distribution graphic."""
     if not dist:
-        return "_none yet_"
+        return "```\n(none yet)\n```"
     max_count = max(c for _, c in dist)
     lines = []
     for faan, count in dist:
         bar_len = max(1, round(count / max_count * max_width)) if max_count else 1
-        bar = "▓" * bar_len
-        lines.append(f"{faan:>2} faan | {bar} {count}")
+        bar = "█" * bar_len
+        lines.append(f"{faan:>2} faan │ {bar} {count}")
     return "```\n" + "\n".join(lines) + "\n```"
 
 
@@ -352,10 +473,13 @@ async def build_player_card_embeds(discord_id: str, fallback_name: str):
 
     season_stats = season_stats or {"display_name": fallback_name, "hands": 0}
     lifetime_stats = lifetime_stats or {"display_name": fallback_name, "hands": 0}
-    season_name = season["name"] if season else "Current Season"
+    if season:
+        season_label = f"Current Season: Season {season['number']} ({season['name']})"
+    else:
+        season_label = "Current Season"
 
     embeds = [
-        _build_single_card_embed(season_stats, f"Season: {season_name}"),
+        _build_single_card_embed(season_stats, season_label),
         _build_single_card_embed(lifetime_stats, "Lifetime"),
     ]
     return embeds

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 import database as db
 import game_actions
-from views import LogGameButtonView, ModToolsView, DateNotesModal
+from views import LogGameButtonView, ModToolsView, _make_date_notes_modal_for_new
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -103,7 +103,7 @@ async def setup_modtools(interaction: discord.Interaction):
 
 @bot.tree.command(name="log-game", description="Log a completed mahjong hand")
 async def log_game(interaction: discord.Interaction):
-    await interaction.response.send_modal(DateNotesModal())
+    await interaction.response.send_modal(_make_date_notes_modal_for_new())
 
 
 # ---------------------------------------------------------------------------

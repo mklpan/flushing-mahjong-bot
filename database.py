@@ -40,7 +40,10 @@ CREATE TABLE IF NOT EXISTS games (
 
 CREATE TABLE IF NOT EXISTS seasons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_number INTEGER,
     name TEXT NOT NULL,           -- e.g. "Fall 2026"
+    start_date TEXT,              -- YYYY-MM-DD, optional -- locks submissions before this date
+    end_date TEXT,                -- YYYY-MM-DD, optional -- locks submissions after this date
     is_active INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     created_by TEXT
@@ -91,6 +94,34 @@ async def _run_migrations(db):
             if "duplicate column" not in str(e).lower():
                 raise
 
+    for stmt in (
+        "ALTER TABLE seasons ADD COLUMN season_number INTEGER",
+        "ALTER TABLE seasons ADD COLUMN start_date TEXT",
+        "ALTER TABLE seasons ADD COLUMN end_date TEXT",
+    ):
+        try:
+            await db.execute(stmt)
+            await db.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+    # Backfill season_number for any season rows that predate that column
+    # (in creation order, so the earliest season becomes #1).
+    async with db.execute(
+        "SELECT id FROM seasons WHERE season_number IS NULL ORDER BY created_at ASC"
+    ) as cur:
+        missing = await cur.fetchall()
+    if missing:
+        async with db.execute("SELECT COALESCE(MAX(season_number), 0) FROM seasons") as cur:
+            (next_number,) = await cur.fetchone()
+        for (season_id,) in missing:
+            next_number += 1
+            await db.execute(
+                "UPDATE seasons SET season_number = ? WHERE id = ?", (next_number, season_id)
+            )
+        await db.commit()
+
     # Ensure there's always exactly one active season. If none exists yet
     # (fresh install, or upgrading from a pre-season version of the bot),
     # create a default one and backfill any existing games into it.
@@ -98,7 +129,7 @@ async def _run_migrations(db):
         active = await cur.fetchone()
     if not active:
         cur = await db.execute(
-            "INSERT INTO seasons (name, is_active, created_at, created_by) VALUES (?, 1, ?, ?)",
+            "INSERT INTO seasons (season_number, name, is_active, created_at, created_by) VALUES (1, ?, 1, ?, ?)",
             ("Season 1", time.time(), "system"),
         )
         season_id = cur.lastrowid
@@ -111,23 +142,50 @@ async def _run_migrations(db):
 async def get_active_season():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, name FROM seasons WHERE is_active = 1 LIMIT 1"
+            "SELECT id, season_number, name, start_date, end_date FROM seasons WHERE is_active = 1 LIMIT 1"
         ) as cur:
             row = await cur.fetchone()
-            return {"id": row[0], "name": row[1]} if row else None
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "number": row[1],
+                "name": row[2],
+                "start_date": row[3],
+                "end_date": row[4],
+            }
 
 
-async def create_new_season(name: str, created_by: str) -> int:
+async def create_new_season(
+    name: str, created_by: str, season_number: int = None, start_date: str = None, end_date: str = None
+) -> int:
     """Deactivates the current season and starts a new one. Past games
-    stay tied to their original season_id, so history is preserved."""
+    stay tied to their original season_id, so history is preserved.
+    If season_number is not given, auto-increments from the highest
+    existing season number."""
     async with aiosqlite.connect(DB_PATH) as db:
+        if season_number is None:
+            async with db.execute("SELECT COALESCE(MAX(season_number), 0) FROM seasons") as cur:
+                (max_num,) = await cur.fetchone()
+            season_number = max_num + 1
+
         await db.execute("UPDATE seasons SET is_active = 0 WHERE is_active = 1")
         cur = await db.execute(
-            "INSERT INTO seasons (name, is_active, created_at, created_by) VALUES (?, 1, ?, ?)",
-            (name, time.time(), created_by),
+            """INSERT INTO seasons (season_number, name, start_date, end_date, is_active, created_at, created_by)
+               VALUES (?, ?, ?, ?, 1, ?, ?)""",
+            (season_number, name, start_date, end_date, time.time(), created_by),
         )
         await db.commit()
         return cur.lastrowid
+
+
+async def update_season_dates(season_id: int, start_date: str, end_date: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE seasons SET start_date = ?, end_date = ? WHERE id = ?",
+            (start_date, end_date, season_id),
+        )
+        await db.commit()
 
 
 async def get_or_create_player(discord_id: str, display_name: str) -> int:
@@ -498,6 +556,91 @@ async def get_player_stats(discord_id: str):
             "avg_faan": round(avg_faan, 1) if avg_faan else None,
             "false_wins": false_wins,
         }
+
+
+async def get_recent_games_for_picker(limit: int = 25):
+    """Compact list for the mod-tools game picker dropdown (max 25 options)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT g.id, g.win_type, g.faan, g.game_date, winner.display_name, discarder.display_name
+            FROM games g
+            LEFT JOIN players winner ON winner.id = g.winner_id
+            LEFT JOIN players discarder ON discarder.id = g.discarder_id
+            ORDER BY g.timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def get_game_for_edit(game_id: int):
+    """Full detail needed to pre-fill the edit flow, including each seated
+    player's Discord ID (so we can look up live discord.Member objects)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id, win_type, faan, game_date, notes, winner_id, discarder_id, season_id
+               FROM games WHERE id = ?""",
+            (game_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        gid, win_type, faan, game_date, notes, winner_id, discarder_id, season_id = row
+
+        async with db.execute(
+            """SELECT p.id, p.discord_id, p.display_name
+               FROM game_scores gs JOIN players p ON p.id = gs.player_id
+               WHERE gs.game_id = ?""",
+            (game_id,),
+        ) as cur:
+            players = await cur.fetchall()  # [(player_id, discord_id, display_name), ...]
+
+        return {
+            "id": gid,
+            "win_type": win_type,
+            "faan": faan,
+            "game_date": game_date,
+            "notes": notes,
+            "winner_id": winner_id,
+            "discarder_id": discarder_id,
+            "season_id": season_id,
+            "players": players,
+        }
+
+
+async def overwrite_game(
+    game_id: int,
+    win_type: str,
+    faan,
+    winner_player_id,
+    discarder_player_id,
+    notes: str,
+    game_date: str,
+    score_deltas: dict,
+) -> bool:
+    """Replaces an existing game's data and score rows in place (used by
+    the full edit flow). Keeps the original season_id, timestamp, and
+    logged_by untouched."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+        if not await cur.fetchone():
+            return False
+
+        await db.execute(
+            """UPDATE games SET win_type = ?, faan = ?, winner_id = ?, discarder_id = ?,
+               notes = ?, game_date = ? WHERE id = ?""",
+            (win_type, faan, winner_player_id, discarder_player_id, notes, game_date, game_id),
+        )
+        await db.execute("DELETE FROM game_scores WHERE game_id = ?", (game_id,))
+        for player_id, points in score_deltas.items():
+            await db.execute(
+                "INSERT INTO game_scores (game_id, player_id, points) VALUES (?, ?, ?)",
+                (game_id, player_id, points),
+            )
+        await db.commit()
+        return True
 
 
 async def get_game(game_id: int):

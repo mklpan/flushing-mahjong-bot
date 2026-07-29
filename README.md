@@ -23,7 +23,7 @@ running leaderboard, and showing player stats. Scoring follows the
 - `/setup-loggame` — post the persistent Log Game button (do this once)
 - `/setup-leaderboard` — post the live-updating leaderboard (do this once)
 - `/setup-gamelog` — set this channel as where every logged game's card gets posted (do this once)
-- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Export CSV
+- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Season Dates, Export CSV
 
 ### One-time setup checklist
 
@@ -33,9 +33,18 @@ Run these once, each in the channel you want them to live in:
 3. `/setup-leaderboard` in your leaderboard channel
 4. `/setup-modtools` in a mod-only channel
 
+### Delete / Edit Game
+
+Both now work by picking from a dropdown list of the 25 most recent games (labeled like `H42 · 2026-07-29 · Alice (Discard, 5f)`) rather than typing an ID.
+
+- **Delete** shows a confirmation with the game's details before actually removing it — nothing is deleted on the first click.
+- **Edit** re-opens the *exact same* multi-step flow used for logging a new hand (date/notes → faan/win type/players → winner/discarder), but every field starts pre-filled with that game's current values, so you can see exactly what you're changing. Submitting overwrites the original game in place — it does not create a duplicate.
+
 ### Seasons
 
-The bot starts with one default season. Mods use the **New Season** button in the mod tools panel to name and start a new season — this archives the current leaderboard message as a historical record and posts a fresh one. All past games stay tied to their original season, so `/stats` can always show both season and lifetime numbers correctly. `/leaderboard` always reflects the currently active season.
+Each season has a **number** and a **name** (e.g. "Season 2 (Fall 2026)"), shown in the leaderboard title and on player stat cards. The **New Season** button lets a mod set both explicitly (or leave the number blank to auto-increment), plus optional start/end dates. Past games stay tied to their original season permanently, so `/stats` always shows accurate season *and* lifetime numbers.
+
+**Season date locking:** if a season has a start/end date set, any new game dated outside that window is rejected at submission time with a clear error. Use the **Season Dates** mod tool to add or update a date lock on the *currently active* season at any time (independent of starting a new season).
 
 ### Duplicate-submission protection
 

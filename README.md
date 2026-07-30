@@ -15,6 +15,9 @@ running leaderboard, and showing player stats. Scoring follows the
 - `/log-game` — same flow, but reachable without the button being visible
 - `/leaderboard [season_number]` — current season's standings, or a past season's if you give a number
 - `/stats [player]` — full stat card (current season **and** lifetime)
+- `/play-style [player]` — a radar chart (Attack/Defense/Aggression/Consistency) rendered as an actual image, requires 20+ hands in that scope to show
+- `/head-to-head` — compare two players' record against each other (current season **and** lifetime)
+- `/game-history [player]` — a player's game-by-game history (current season only, most recent first)
 - `/recent-games` — last 10 games logged
 - `/season-list` — every season this club has had, with its date range and current-season marker
 - `/hall-of-fame` — top 10 finishers from every **completed** season (the current in-progress season doesn't appear until it ends)
@@ -56,6 +59,10 @@ Each season has a **number** and a **name** (e.g. "Season 2 (Fall 2026)"), shown
 
 If a season has a start/end date set, any new game dated outside that window is rejected at submission time with a clear error. Use the **Edit Season** mod tool to add or update a date lock on the *currently active* season at any time (independent of starting a new season).
 
+### Remembering seated players
+
+When you log a new hand, the bot remembers the 4 players you were seated with and pre-fills them automatically the next time you log a hand that same day — handy for logging several hands from the same table in a row. This resets at midnight **US/Eastern**, so it never carries over to a new day. It only applies to *new* hands, not edits, and only for the person who actually logged the game (each mod/player has their own separate memory).
+
 ### Duplicate-submission protection
 
 The Submit button disables itself the instant it's clicked (before any network calls), so mashing it can't create duplicate entries — the second click is a no-op.
@@ -63,6 +70,17 @@ The Submit button disables itself the instant it's clicked (before any network c
 ### A note on "Net discard given"
 
 This stat's exact original formula lives in a Google Sheets formula from the prior bot, not in that bot's code, so it wasn't possible to confirm byte-for-byte. It's implemented here as: **total points paid out specifically while in the discarder role** (excludes self-draw losses and false-win penalties). If you check the original spreadsheet formula and it differs, this is a one-line change in `database.py`.
+
+### Play Style chart
+
+`/play-style` renders an actual radar chart image using `matplotlib` (added as a dependency — Railway will install it automatically on your next deploy, no manual setup needed). The four axes are custom-defined for this bot rather than pulled from an existing standard:
+
+- **Attack** — average points earned per winning hand, capped at 100
+- **Defense** — 100 minus your discard-loss rate (how often you deal into someone else's win)
+- **Aggression** — how high-faan your typical winning hand is (3 faan = 0, 13 faan = 100)
+- **Consistency** — plain win rate
+
+Requires at least 20 hands in a scope (season or lifetime) before it'll render — below that, it shows a "not enough data yet" message instead. All four formulas are adjustable in `game_actions.py`'s `_compute_playstyle_scores` if you want to tune them later.
 
 ### Setting up the button and live leaderboard
 

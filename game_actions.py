@@ -778,6 +778,12 @@ def _build_single_card_embed(stats: dict, scope_label: str):
     embed.add_field(name="🍚 Fed most by", value=_rank_list(stats["fed_by"]), inline=True)
     embed.add_field(name="🎯 Fed the most to", value=_rank_list(stats["fed_to"]), inline=True)
 
+    if stats["hands"] >= PLAYSTYLE_MIN_HANDS:
+        embed.set_footer(text="🎯 Run /play-style to see your play style radar chart")
+    else:
+        remaining = PLAYSTYLE_MIN_HANDS - stats["hands"]
+        embed.set_footer(text=f"🎯 Play {remaining} more hand{'s' if remaining != 1 else ''} to unlock /play-style")
+
     return embed
 
 

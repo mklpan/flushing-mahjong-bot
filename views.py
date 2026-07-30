@@ -29,11 +29,19 @@ Mod tools flow:
 import csv
 import io
 import datetime
+from zoneinfo import ZoneInfo
 import discord
 
 import database as db
 import scoring
 import game_actions
+
+EASTERN = ZoneInfo("America/New_York")
+
+
+def _eastern_today_str():
+    return datetime.datetime.now(EASTERN).date().isoformat()
+
 
 FAAN_OPTIONS = [discord.SelectOption(label=f"{n} faan", value=str(n)) for n in range(3, 14)]
 
@@ -74,10 +82,11 @@ async def _resolve_members(guild: discord.Guild, discord_ids):
     return members, missing
 
 
-async def _finish_log_flow(interaction: discord.Interaction, result: dict):
+async def _finish_log_flow(interaction: discord.Interaction, result: dict, seated=None, is_edit=False):
     """Shared tail end for every win-type path: post the card to the
     game-log channel (or fall back to the current channel), refresh the
-    live leaderboard, and make the ephemeral flow message disappear."""
+    live leaderboard, remember the seated players for next time (new logs
+    only), and make the ephemeral flow message disappear."""
     if not result["ok"]:
         await interaction.edit_original_response(content=f"⚠️ {result['error']}", embed=None, view=None)
         return
@@ -87,6 +96,9 @@ async def _finish_log_flow(interaction: discord.Interaction, result: dict):
         await interaction.channel.send(embed=result["embed"])
 
     await game_actions.refresh_boards(interaction.client)
+
+    if not is_edit and seated:
+        await db.set_last_seated(str(interaction.user.id), [m.id for m in seated], _eastern_today_str())
 
     try:
         await interaction.delete_original_response()
@@ -146,13 +158,28 @@ class DateNotesModal(discord.ui.Modal):
         else:
             game_date = datetime.date.today().isoformat()
 
+        initial_seated = self.prefill_seated
+        if self.edit_game_id is None:
+            # Only for NEW hands (not edits) -- recall the last 4 seated
+            # players this user logged with today (US/Eastern), so they
+            # don't have to re-pick the same table every single hand.
+            last = await db.get_last_seated(str(interaction.user.id))
+            if last and last["updated_date"] == _eastern_today_str() and interaction.guild:
+                resolved = []
+                for pid in last["player_ids"]:
+                    member = interaction.guild.get_member(int(pid))
+                    if member:
+                        resolved.append(member)
+                if resolved:
+                    initial_seated = resolved
+
         view = GameDetailsView(
             game_date=game_date,
             notes=self.notes_input.value.strip() or None,
             requester_id=interaction.user.id,
             edit_game_id=self.edit_game_id,
             edit_display_ref=self.edit_display_ref,
-            initial_seated=self.prefill_seated,
+            initial_seated=initial_seated,
             initial_faan=self.prefill_faan,
             initial_win_type=self.prefill_win_type,
             initial_winner=self.prefill_winner,
@@ -280,7 +307,7 @@ class NextButton(discord.ui.Button):
                     logged_by_name=interaction.user.display_name,
                     game_date=v.game_date,
                 )
-            await _finish_log_flow(interaction, result)
+            await _finish_log_flow(interaction, result, seated=v.seated, is_edit=bool(v.edit_game_id))
             return
 
         role_view = RoleSelectView(parent=v)
@@ -435,7 +462,7 @@ class RoleSubmitButton(discord.ui.Button):
                 **common_kwargs,
             )
 
-        await _finish_log_flow(interaction, result)
+        await _finish_log_flow(interaction, result, seated=p.seated, is_edit=bool(p.edit_game_id))
 
 
 class RoleSelectView(discord.ui.View):

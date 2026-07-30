@@ -9,6 +9,7 @@ Schema:
 """
 
 import aiosqlite
+import json
 import os
 import time
 
@@ -61,6 +62,12 @@ CREATE TABLE IF NOT EXISTS game_scores (
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS last_seated (
+    discord_id TEXT PRIMARY KEY,   -- the person who logged the game
+    player_ids TEXT NOT NULL,      -- JSON array of the 4 seated players' discord IDs
+    updated_date TEXT NOT NULL     -- YYYY-MM-DD in US/Eastern -- resets once this no longer matches "today"
 );
 """
 
@@ -335,6 +342,28 @@ async def get_setting(key: str):
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
+
+
+async def get_last_seated(discord_id: str):
+    """Returns {player_ids: [...], updated_date: 'YYYY-MM-DD'} or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT player_ids, updated_date FROM last_seated WHERE discord_id = ?", (discord_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+            return {"player_ids": json.loads(row[0]), "updated_date": row[1]}
+
+
+async def set_last_seated(discord_id: str, player_ids, updated_date: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO last_seated (discord_id, player_ids, updated_date) VALUES (?, ?, ?) "
+            "ON CONFLICT(discord_id) DO UPDATE SET player_ids = excluded.player_ids, updated_date = excluded.updated_date",
+            (discord_id, json.dumps([str(p) for p in player_ids]), updated_date),
+        )
+        await db.commit()
 
 
 async def set_setting(key: str, value: str):

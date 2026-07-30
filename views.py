@@ -165,11 +165,7 @@ class DateNotesModal(discord.ui.Modal):
             # don't have to re-pick the same table every single hand.
             last = await db.get_last_seated(str(interaction.user.id))
             if last and last["updated_date"] == _eastern_today_str() and interaction.guild:
-                resolved = []
-                for pid in last["player_ids"]:
-                    member = interaction.guild.get_member(int(pid))
-                    if member:
-                        resolved.append(member)
+                resolved, _missing = await _resolve_members(interaction.guild, last["player_ids"])
                 if resolved:
                     initial_seated = resolved
 

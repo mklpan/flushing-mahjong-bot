@@ -833,25 +833,11 @@ class ModToolsView(discord.ui.View):
             await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        rows = await db.export_rows()
-        if not rows:
+        filename, file_bytes = await game_actions.build_export_csv()
+        if filename is None:
             await interaction.followup.send("No games logged yet.", ephemeral=True)
             return
 
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow(
-            ["game_id", "logged_at_utc", "game_date", "season_number", "season_name", "season_game_number",
-             "win_type", "faan", "player_name", "discord_id", "points", "is_winner", "is_discarder", "notes"]
-        )
-        for row in rows:
-            game_id, ts, game_date, season_number, season_name, season_game_number, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes = row
-            dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).isoformat()
-            writer.writerow([game_id, dt, game_date, season_number, season_name, season_game_number, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes])
-
-        buffer.seek(0)
-        file_bytes = io.BytesIO(buffer.getvalue().encode("utf-8"))
-        filename = f"mahjong_export_{datetime.date.today().isoformat()}.csv"
         await interaction.followup.send(
             content="Here's your export — one row per player per game.",
             file=discord.File(file_bytes, filename=filename),

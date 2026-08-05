@@ -4,6 +4,7 @@ commands and the button/modal UI, so scoring/validation/formatting all
 live in exactly one place.
 """
 
+import csv
 import datetime
 import io
 import discord
@@ -619,6 +620,30 @@ def _render_playstyle_chart(display_name, scope_label, scores):
     plt.close(fig)  # release matplotlib's internal figure state -- avoids a memory leak across repeated calls
     buf.seek(0)
     return buf
+
+
+async def build_export_csv():
+    """Returns (filename, BytesIO) or (None, None) if there's no data yet.
+    Shared by the manual /export-csv button and the automated backup task."""
+    rows = await db.export_rows()
+    if not rows:
+        return None, None
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        ["game_id", "logged_at_utc", "game_date", "season_number", "season_name", "season_game_number",
+         "win_type", "faan", "player_name", "discord_id", "points", "is_winner", "is_discarder", "notes"]
+    )
+    for row in rows:
+        game_id, ts, game_date, season_number, season_name, season_game_number, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes = row
+        dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).isoformat()
+        writer.writerow([game_id, dt, game_date, season_number, season_name, season_game_number, win_type, faan, player_name, discord_id, points, is_winner, is_discarder, notes])
+
+    buffer.seek(0)
+    file_bytes = io.BytesIO(buffer.getvalue().encode("utf-8"))
+    filename = f"mahjong_export_{datetime.date.today().isoformat()}.csv"
+    return filename, file_bytes
 
 
 async def build_playstyle_results(discord_id: str, display_name: str):

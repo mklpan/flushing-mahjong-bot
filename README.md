@@ -75,12 +75,45 @@ This stat's exact original formula lives in a Google Sheets formula from the pri
 
 `/play-style` renders an actual radar chart image using `matplotlib` (added as a dependency — Railway will install it automatically on your next deploy, no manual setup needed). The four axes are custom-defined for this bot rather than pulled from an existing standard:
 
-- **Attack** — average points earned per winning hand, capped at 100
-- **Defense** — 100 minus your discard-loss rate (how often you deal into someone else's win)
-- **Aggression** — how high-faan your typical winning hand is (3 faan = 0, 13 faan = 100)
-- **Consistency** — plain win rate
+**Attack — how hard you hit when you win**
+```
+Attack = average points earned per winning hand (capped at 100)
+```
+Add up all the points you've earned across every hand you've won, divide by your number of wins.
+*Example:* wins worth 24, 16, and 8 points → Attack = (24+16+8)/3 = 16.
 
-Requires at least 20 hands in a scope (season or lifetime) before it'll render — below that, it shows a "not enough data yet" message instead. All four formulas are adjustable in `game_actions.py`'s `_compute_playstyle_scores` if you want to tune them later.
+**Defense — how well you avoid feeding others**
+```
+Defense = 100 − (times you discarded into a loss ÷ total hands played) × 100
+```
+How often you're specifically the discarder in a hand someone else wins, relative to hands played.
+*Example:* 20 hands played, discarded into a loss 4 times → Defense = 100 − (4/20 × 100) = 80.
+
+**Aggression — how big the hands you go for are**
+```
+Aggression = (average faan on your wins − 3) ÷ (13 − 3) × 100
+```
+Maps your typical winning faan onto a 0-100 scale (3 faan = the minimum winning hand = 0, 13 faan = the max = 100).
+*Example:* wins average 6 faan → Aggression = (6−3)/(13−3) × 100 = 30.
+
+**Consistency — how often you actually win**
+```
+Consistency = win rate = (wins ÷ total hands) × 100
+```
+Same win percentage already shown on the leaderboard.
+
+Requires at least 20 hands in a scope (season or lifetime) before it'll render — below that threshold the numbers would be too noisy to mean much, so it shows a "not enough data yet" message instead. These aren't official mahjong statistics — they were custom-designed for this bot based on data it already tracks, and all four formulas are easy to adjust in `game_actions.py`'s `_compute_playstyle_scores` if any of them ever feel off.
+
+### Automated weekly backups (optional, recommended)
+
+If `BACKUP_WEBHOOK_URL` is set (see `.env.example`), the bot automatically posts a fresh CSV export every **Sunday at 9am US/Eastern** to a webhook URL you control — designed specifically to deliver to a channel in a *different* server than the club server (e.g. your own personal server), giving you a backup that's genuinely independent of both Railway and the club server itself.
+
+**Setup:**
+1. In whichever server/channel you want backups delivered to: **Channel Settings → Integrations → Webhooks → New Webhook**
+2. Copy the webhook URL
+3. Add it as `BACKUP_WEBHOOK_URL` in Railway's Variables tab (and your local `.env` if you want to test it)
+
+The bot does **not** need to be a member of that server for this to work — webhooks deliver independently of bot membership. If the variable is left unset, this feature is simply disabled with no other effect.
 
 ### Setting up the button and live leaderboard
 

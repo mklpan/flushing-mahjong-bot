@@ -1,7 +1,10 @@
 import os
 import datetime
+from zoneinfo import ZoneInfo
+import aiohttp
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 import database as db
@@ -10,7 +13,9 @@ from views import LogGameButtonView, ModToolsView, _make_date_notes_modal_for_ne
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+BACKUP_WEBHOOK_URL = os.getenv("BACKUP_WEBHOOK_URL")  # optional -- personal-server backup channel
 
+EASTERN = ZoneInfo("America/New_York")
 intents = discord.Intents.default()
 
 
@@ -18,18 +23,52 @@ class MahjongBot(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+        self.session = None  # aiohttp session, used for delivering webhook backups
 
     async def setup_hook(self):
         await db.init_db()
+        self.session = aiohttp.ClientSession()
         # Re-register persistent views so their buttons keep working after
         # a restart/redeploy (Discord remembers the message, the bot needs
         # to remember which view/custom_ids it maps to).
         self.add_view(LogGameButtonView())
         self.add_view(ModToolsView())
         await self.tree.sync()
+        if BACKUP_WEBHOOK_URL:
+            weekly_backup_task.start(self)
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+        await super().close()
 
 
 bot = MahjongBot()
+
+
+@tasks.loop(time=datetime.time(hour=9, minute=0, tzinfo=EASTERN))
+async def weekly_backup_task(bot_instance):
+    """Runs a daily check, but only actually sends on Sundays -- avoids the
+    schedule drifting on every redeploy, which a plain 'every N hours'
+    interval would be prone to."""
+    if datetime.datetime.now(EASTERN).weekday() != 6:  # 6 = Sunday
+        return
+    if not BACKUP_WEBHOOK_URL:
+        return
+
+    filename, file_bytes = await game_actions.build_export_csv()
+    if filename is None:
+        return  # nothing logged yet -- nothing to back up
+
+    try:
+        webhook = discord.Webhook.from_url(BACKUP_WEBHOOK_URL, session=bot_instance.session)
+        await webhook.send(
+            content=f"📦 Weekly backup — {datetime.date.today().isoformat()}",
+            file=discord.File(file_bytes, filename=filename),
+            username="Mahjong Bot Backups",
+        )
+    except Exception as e:
+        print(f"Weekly backup failed: {e}")
 
 
 @bot.event

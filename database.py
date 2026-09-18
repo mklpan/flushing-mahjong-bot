@@ -807,6 +807,31 @@ async def get_game(game_id: int):
         }
 
 
+async def reset_current_season(season_id: int) -> int:
+    """Deletes every game (and its scores) belonging to ONE season only --
+    other seasons, the season's own name/number/dates, blacklist, and all
+    settings (channel setup) are left completely untouched. Also removes
+    any player who now has zero games left in ANY season (e.g. a
+    test-only player), so they don't linger as a ghost 0-pt entry on the
+    lifetime leaderboard. Returns the number of games deleted."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM games WHERE season_id = ?", (season_id,)
+        ) as cur:
+            (game_count,) = await cur.fetchone()
+
+        await db.execute(
+            "DELETE FROM game_scores WHERE game_id IN (SELECT id FROM games WHERE season_id = ?)",
+            (season_id,),
+        )
+        await db.execute("DELETE FROM games WHERE season_id = ?", (season_id,))
+        await db.execute(
+            "DELETE FROM players WHERE id NOT IN (SELECT DISTINCT player_id FROM game_scores)"
+        )
+        await db.commit()
+        return game_count
+
+
 async def delete_game(game_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT id FROM games WHERE id = ?", (game_id,))

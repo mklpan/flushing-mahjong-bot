@@ -32,7 +32,7 @@ running leaderboard, and showing player stats. Scoring follows the
 - `/setup-hall-of-fame` — post a live-updating Hall of Fame (do this once)
 - `/setup-season-dashboard` — post a live-updating season-wide stats dashboard (do this once)
 - `/setup-gamelog` — set this channel as where every logged game's card gets posted (do this once)
-- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Edit Season, Export CSV
+- `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Edit Season, Reset Season, Export CSV
 
 ### One-time setup checklist
 
@@ -44,6 +44,12 @@ Run these once, each in the channel you want them to live in:
 5. `/setup-hall-of-fame` in a channel for completed-season results
 6. `/setup-season-dashboard` in a channel for season-wide stats
 7. `/setup-modtools` in a mod-only channel
+
+### Reset Season
+
+**Reset Season** permanently deletes every game logged in the *current* season only — other seasons, blacklist entries, and all channel setup are completely untouched. It requires typing the exact word `RESET` into a confirmation modal (not just a button click) given how destructive it is. Any player left with zero games anywhere after the reset is also cleaned up, so old test-only players don't linger as ghost 0-point entries on the lifetime leaderboard.
+
+This is meant for exactly one situation: testing the bot for real (logging real test hands, trying mod tools, etc.) in a season you plan to throw away before actually opening things up to real players — not for correcting a mistake mid-season, which `/delete-game` already handles more precisely.
 
 ### Delete / Edit Game
 

@@ -734,6 +734,35 @@ class EditSeasonModal(discord.ui.Modal, title="Edit Current Season"):
         )
 
 
+class ResetSeasonModal(discord.ui.Modal, title="Reset Current Season"):
+    confirm_input = discord.ui.TextInput(
+        label="Type RESET to confirm",
+        placeholder="RESET",
+        max_length=10,
+    )
+
+    def __init__(self, season: dict):
+        super().__init__()
+        self.season = season
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirm_input.value.strip().upper() != "RESET":
+            await interaction.response.send_message(
+                "Didn't match — type exactly `RESET` to confirm. Nothing was deleted.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        deleted_count = await db.reset_current_season(self.season["id"])
+        await game_actions.refresh_boards(interaction.client)
+
+        await interaction.followup.send(
+            f"🗑️ **Season {self.season['number']} ({self.season['name']})** has been reset — "
+            f"{deleted_count} game(s) permanently deleted. Other seasons were not affected.",
+            ephemeral=True,
+        )
+
+
 class BlacklistSelectView(discord.ui.View):
     def __init__(self, blacklist: bool):
         super().__init__(timeout=120)
@@ -827,6 +856,17 @@ class ModToolsView(discord.ui.View):
             await interaction.response.send_message("No active season.", ephemeral=True)
             return
         await interaction.response.send_modal(EditSeasonModal(season))
+
+    @discord.ui.button(label="Reset Season", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="mahjong_mod_resetseason", row=2)
+    async def reset_season(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _has_mod_permission(interaction):
+            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+            return
+        season = await db.get_active_season()
+        if not season:
+            await interaction.response.send_message("No active season.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ResetSeasonModal(season))
 
     @discord.ui.button(label="Export CSV", emoji="📊", style=discord.ButtonStyle.success, custom_id="mahjong_mod_export", row=2)
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):

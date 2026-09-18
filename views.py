@@ -734,7 +734,28 @@ class EditSeasonModal(discord.ui.Modal, title="Edit Current Season"):
         )
 
 
-class ResetSeasonModal(discord.ui.Modal, title="Reset Current Season"):
+class SeasonPickerSelect(discord.ui.Select):
+    def __init__(self, seasons):
+        options = []
+        for s in seasons:
+            marker = " (current)" if s["is_active"] else ""
+            label = f"Season {s['number']} ({s['name']}){marker}"
+            options.append(discord.SelectOption(label=label[:100], value=str(s["id"])))
+        super().__init__(placeholder="Select a season to reset", options=options, min_values=1, max_values=1)
+        self.seasons_by_id = {s["id"]: s for s in seasons}
+
+    async def callback(self, interaction: discord.Interaction):
+        season = self.seasons_by_id[int(self.values[0])]
+        await interaction.response.send_modal(ResetSeasonModal(season))
+
+
+class SeasonPickerView(discord.ui.View):
+    def __init__(self, seasons):
+        super().__init__(timeout=120)
+        self.add_item(SeasonPickerSelect(seasons))
+
+
+class ResetSeasonModal(discord.ui.Modal, title="Reset a Season"):
     confirm_input = discord.ui.TextInput(
         label="Type RESET to confirm",
         placeholder="RESET",
@@ -862,11 +883,15 @@ class ModToolsView(discord.ui.View):
         if not _has_mod_permission(interaction):
             await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
             return
-        season = await db.get_active_season()
-        if not season:
-            await interaction.response.send_message("No active season.", ephemeral=True)
+        seasons = await db.get_all_seasons()
+        if not seasons:
+            await interaction.response.send_message("No seasons exist yet.", ephemeral=True)
             return
-        await interaction.response.send_modal(ResetSeasonModal(season))
+        await interaction.response.send_message(
+            "Select which season to reset. This is a **permanent delete** for that season's games only — other seasons stay untouched.",
+            view=SeasonPickerView(seasons),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Export CSV", emoji="📊", style=discord.ButtonStyle.success, custom_id="mahjong_mod_export", row=2)
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):

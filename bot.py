@@ -168,7 +168,7 @@ async def setup_modtools(interaction: discord.Interaction):
             "**Blacklist / Unblacklist** — control who can be logged in games\n"
             "**View Blacklist** — see who's currently blacklisted\n"
             "**New Season** — archive the current leaderboard and start fresh\n"
-            "**Reset Season** — ⚠️ permanently delete every game in the *current* season only (type-to-confirm required)\n"
+            "**Reset Season** — ⚠️ pick any season (including past ones) and permanently delete its games (type-to-confirm required)\n"
             "**Export CSV** — download all logged games for Power BI / Tableau / Excel"
         ),
         color=discord.Color.dark_gold(),

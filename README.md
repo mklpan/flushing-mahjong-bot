@@ -47,9 +47,11 @@ Run these once, each in the channel you want them to live in:
 
 ### Reset Season
 
-**Reset Season** permanently deletes every game logged in the *current* season only — other seasons, blacklist entries, and all channel setup are completely untouched. It requires typing the exact word `RESET` into a confirmation modal (not just a button click) given how destructive it is. Any player left with zero games anywhere after the reset is also cleaned up, so old test-only players don't linger as ghost 0-point entries on the lifetime leaderboard.
+**Reset Season** shows a dropdown of every season that exists (including past, non-active ones) and permanently deletes every game in whichever one you pick — other seasons, blacklist entries, and all channel setup are completely untouched. It requires typing the exact word `RESET` into a confirmation modal (not just a button click) given how destructive it is. Any player left with zero games anywhere after the reset is also cleaned up, so old test-only players don't linger as ghost 0-point entries on the lifetime leaderboard.
 
-This is meant for exactly one situation: testing the bot for real (logging real test hands, trying mod tools, etc.) in a season you plan to throw away before actually opening things up to real players — not for correcting a mistake mid-season, which `/delete-game` already handles more precisely.
+**Important if you tested across more than one season:** the lifetime leaderboard/hall-of-fame combine data from *every* season. If you started a "New Season" partway through testing, you'll have two (or more) seasons' worth of test data sitting in the database — run Reset Season once *per season* to fully clear it, not just once.
+
+This is meant for exactly one situation: testing the bot for real (logging real test hands, trying mod tools, etc.) in a season (or seasons) you plan to throw away before actually opening things up to real players — not for correcting a mistake mid-season, which `/delete-game` already handles more precisely.
 
 ### Delete / Edit Game
 

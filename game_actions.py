@@ -728,13 +728,68 @@ async def update_live_hall_of_fame(client: discord.Client):
             pass
 
 
+async def build_season_dashboard_embed(season: dict = None):
+    if season is None:
+        season = await db.get_active_season()
+    if not season:
+        embed = discord.Embed(title=f"📊 {CLUB_NAME} — Season Stats", color=discord.Color.teal())
+        embed.description = "No active season."
+        return embed
+
+    stats = await db.get_season_dashboard_stats(season["id"])
+    embed = discord.Embed(
+        title=f"📊 {CLUB_NAME} — Season {season['number']} Stats ({season['name']})",
+        color=discord.Color.teal(),
+    )
+
+    embed.description = (
+        f"**{stats['hands']}** hands · **{stats['players']}** players · "
+        f"**{stats['days_played']}** days played · avg **{stats['avg_faan']}** faan"
+    )
+
+    hand_types = (
+        f"🀄 Discard: **{stats['discard_count']}** · "
+        f"🌸 Self-draw: **{stats['self_draw_count']}** · "
+        f"🚩 False wins: **{stats['false_win_count']}** · "
+        f"🤝 Draws: **{stats['draw_count']}**"
+    )
+    embed.add_field(name="Hand types", value=hand_types, inline=False)
+
+    embed.add_field(name="Faan distribution (all wins)", value=_faan_bar_block(stats["faan_dist_overall"]), inline=False)
+    embed.add_field(name="Faan distribution (discard wins)", value=_faan_bar_block(stats["faan_dist_discard"]), inline=False)
+    embed.add_field(name="Faan distribution (self-draw wins)", value=_faan_bar_block(stats["faan_dist_self_draw"]), inline=False)
+
+    active_season = await db.get_active_season()
+    is_current = active_season and active_season["id"] == season["id"]
+    embed.set_footer(text="Updates automatically after every logged game" if is_current else "Final stats — this season has ended")
+    embed.timestamp = datetime.datetime.now()
+    return embed
+
+
+async def update_live_season_dashboard(client: discord.Client):
+    """Same idea as update_live_leaderboard, but for the season stats
+    dashboard set up via /setup-season-dashboard."""
+    channel_id = await db.get_setting("dashboard_channel_id")
+    message_id = await db.get_setting("dashboard_message_id")
+    if channel_id and message_id:
+        try:
+            channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            embed = await build_season_dashboard_embed()
+            await message.edit(embed=embed)
+        except Exception:
+            pass
+
+
 async def refresh_boards(client: discord.Client):
     """Refreshes every live board that's been set up: season leaderboard,
-    lifetime leaderboard, and hall of fame. Call this anywhere a game is
-    logged, edited, or deleted, or a season starts/ends."""
+    lifetime leaderboard, hall of fame, and the season stats dashboard.
+    Call this anywhere a game is logged, edited, or deleted, or a season
+    starts/ends."""
     await update_live_leaderboard(client)
     await update_live_lifetime_leaderboard(client)
     await update_live_hall_of_fame(client)
+    await update_live_season_dashboard(client)
 
 
 # ---------------------------------------------------------------------------

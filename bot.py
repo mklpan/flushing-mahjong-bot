@@ -144,6 +144,19 @@ async def setup_hall_of_fame(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="setup-season-dashboard", description="Post a live-updating season-wide stats dashboard in this channel")
+@app_commands.default_permissions(manage_guild=True)
+async def setup_season_dashboard(interaction: discord.Interaction):
+    embed = await game_actions.build_season_dashboard_embed()
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    await db.set_setting("dashboard_channel_id", str(interaction.channel_id))
+    await db.set_setting("dashboard_message_id", str(message.id))
+    await interaction.followup.send(
+        "This message will now auto-update after every logged game.", ephemeral=True
+    )
+
+
 @bot.tree.command(name="setup-modtools", description="Post the mod tools panel in this channel")
 @app_commands.default_permissions(manage_guild=True)
 async def setup_modtools(interaction: discord.Interaction):
@@ -279,6 +292,12 @@ async def season_list(interaction: discord.Interaction):
 @bot.tree.command(name="hall-of-fame", description="Show the top 3 finishers from every season")
 async def hall_of_fame(interaction: discord.Interaction):
     embed = await game_actions.build_hall_of_fame_embed()
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="season-dashboard", description="Show season-wide stats (hands, players, faan distribution, etc.)")
+async def season_dashboard(interaction: discord.Interaction):
+    embed = await game_actions.build_season_dashboard_embed()
     await interaction.response.send_message(embed=embed)
 
 

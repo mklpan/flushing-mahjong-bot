@@ -956,6 +956,72 @@ async def get_head_to_head_detail(discord_id_a: str, discord_id_b: str, season_i
         return result
 
 
+async def get_season_dashboard_stats(season_id: int):
+    """Season-wide aggregate stats (not per-player) -- total hands, unique
+    players, days played, hand-type breakdown, and faan distributions
+    (overall, and split by discard vs self-draw wins)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM games WHERE season_id = ?", (season_id,)
+        ) as cur:
+            (hands,) = await cur.fetchone()
+
+        async with db.execute(
+            """SELECT COUNT(DISTINCT gs.player_id) FROM game_scores gs
+               JOIN games g ON g.id = gs.game_id WHERE g.season_id = ?""",
+            (season_id,),
+        ) as cur:
+            (players,) = await cur.fetchone()
+
+        async with db.execute(
+            "SELECT COUNT(DISTINCT game_date) FROM games WHERE season_id = ? AND game_date IS NOT NULL",
+            (season_id,),
+        ) as cur:
+            (days_played,) = await cur.fetchone()
+
+        async with db.execute(
+            "SELECT AVG(faan) FROM games WHERE season_id = ? AND faan IS NOT NULL",
+            (season_id,),
+        ) as cur:
+            (avg_faan,) = await cur.fetchone()
+
+        counts = {}
+        for wt in ("discard", "self_draw", "false_win", "draw"):
+            async with db.execute(
+                "SELECT COUNT(*) FROM games WHERE season_id = ? AND win_type = ?", (season_id, wt)
+            ) as cur:
+                (c,) = await cur.fetchone()
+            counts[wt] = c
+
+        async def faan_dist(win_type_filter=None):
+            if win_type_filter:
+                query = "SELECT faan, COUNT(*) FROM games WHERE season_id = ? AND win_type = ? AND faan IS NOT NULL GROUP BY faan ORDER BY faan"
+                params = (season_id, win_type_filter)
+            else:
+                query = "SELECT faan, COUNT(*) FROM games WHERE season_id = ? AND faan IS NOT NULL GROUP BY faan ORDER BY faan"
+                params = (season_id,)
+            async with db.execute(query, params) as cur:
+                return await cur.fetchall()
+
+        faan_dist_overall = await faan_dist()
+        faan_dist_discard = await faan_dist("discard")
+        faan_dist_self_draw = await faan_dist("self_draw")
+
+        return {
+            "hands": hands,
+            "players": players,
+            "days_played": days_played,
+            "avg_faan": round(avg_faan, 1) if avg_faan else 0,
+            "discard_count": counts["discard"],
+            "self_draw_count": counts["self_draw"],
+            "false_win_count": counts["false_win"],
+            "draw_count": counts["draw"],
+            "faan_dist_overall": faan_dist_overall,
+            "faan_dist_discard": faan_dist_discard,
+            "faan_dist_self_draw": faan_dist_self_draw,
+        }
+
+
 async def export_rows():
     """One row per player per game, long format -- suitable for CSV export
     into Power BI / Tableau / Excel. Includes season info for filtering."""

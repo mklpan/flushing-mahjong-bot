@@ -21,6 +21,7 @@ running leaderboard, and showing player stats. Scoring follows the
 - `/recent-games` — last 10 games logged
 - `/season-list` — every season this club has had, with its date range and current-season marker
 - `/hall-of-fame` — top 10 finishers from every **completed** season (the current in-progress season doesn't appear until it ends)
+- `/season-dashboard` — season-wide stats: total hands, players, days played, average faan, hand-type breakdown, and faan distributions (overall, and split by discard vs. self-draw wins)
 - `/leaderboard-lifetime` — all-time standings across every season combined
 - `/ping` — check the bot is alive
 
@@ -29,6 +30,7 @@ running leaderboard, and showing player stats. Scoring follows the
 - `/setup-leaderboard` — post the live-updating season leaderboard (do this once)
 - `/setup-leaderboard-lifetime` — post a live-updating all-time leaderboard (do this once)
 - `/setup-hall-of-fame` — post a live-updating Hall of Fame (do this once)
+- `/setup-season-dashboard` — post a live-updating season-wide stats dashboard (do this once)
 - `/setup-gamelog` — set this channel as where every logged game's card gets posted (do this once)
 - `/setup-modtools` — post the mod tools button panel (do this once): Delete Game, Edit Game, Blacklist, Unblacklist, View Blacklist, New Season, Edit Season, Export CSV
 
@@ -40,7 +42,8 @@ Run these once, each in the channel you want them to live in:
 3. `/setup-leaderboard` in your leaderboard channel
 4. `/setup-leaderboard-lifetime` in a channel for the all-time board (can be the same channel)
 5. `/setup-hall-of-fame` in a channel for completed-season results
-6. `/setup-modtools` in a mod-only channel
+6. `/setup-season-dashboard` in a channel for season-wide stats
+7. `/setup-modtools` in a mod-only channel
 
 ### Delete / Edit Game
 

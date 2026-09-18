@@ -681,6 +681,7 @@ class NewSeasonModal(discord.ui.Modal, title="Start a New Season"):
         # The season that just ended is now eligible for the Hall of Fame.
         await game_actions.update_live_hall_of_fame(interaction.client)
         await game_actions.update_live_lifetime_leaderboard(interaction.client)
+        await game_actions.update_live_season_dashboard(interaction.client)
 
         await interaction.response.send_message(
             f"🎉 New season started: **{name}**.{posted_note} Use `/hall-of-fame` to see top finishers from every past season.",

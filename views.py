@@ -26,6 +26,7 @@ Mod tools flow:
   channel itself being mod-only.
 """
 
+import asyncio
 import csv
 import io
 import datetime
@@ -84,26 +85,44 @@ async def _resolve_members(guild: discord.Guild, discord_ids):
 
 async def _finish_log_flow(interaction: discord.Interaction, result: dict, seated=None, is_edit=False):
     """Shared tail end for every win-type path: post the card to the
-    game-log channel (or fall back to the current channel), refresh the
-    live leaderboard, remember the seated players for next time (new logs
-    only), and make the ephemeral flow message disappear."""
+    game-log channel (or fall back to the current channel), remember the
+    seated players for next time (new logs only), and make the ephemeral
+    flow message disappear -- all without waiting on the live leaderboard
+    /hall-of-fame/dashboard refresh, which runs in the background instead
+    so it never adds to how long the person waits after clicking Submit.
+
+    By the time this runs, the game is ALREADY saved to the database --
+    everything below is just display/cleanup. So no matter what fails
+    here, the person must never be left staring at a stuck "Logging..."
+    message with no explanation."""
     if not result["ok"]:
         await interaction.edit_original_response(content=f"⚠️ {result['error']}", embed=None, view=None)
         return
 
-    posted = await game_actions.post_logged_game(interaction.client, result["embed"])
-    if not posted:
-        await interaction.channel.send(embed=result["embed"])
+    try:
+        posted = await game_actions.post_logged_game(interaction.client, result["embed"])
+        if not posted:
+            await interaction.channel.send(embed=result["embed"])
+    except Exception as e:
+        print(f"Failed to post logged-game card: {e}")
+        # The game itself is already saved -- don't let a display failure
+        # here block the rest of cleanup below.
 
-    await game_actions.refresh_boards(interaction.client)
+    asyncio.create_task(game_actions.refresh_boards(interaction.client))
 
     if not is_edit and seated:
-        await db.set_last_seated(str(interaction.user.id), [m.id for m in seated], _eastern_today_str())
+        try:
+            await db.set_last_seated(str(interaction.user.id), [m.id for m in seated], _eastern_today_str())
+        except Exception as e:
+            print(f"Failed to save last_seated: {e}")
 
     try:
         await interaction.delete_original_response()
     except Exception:
-        await interaction.edit_original_response(content="✅ Done!", embed=None, view=None)
+        try:
+            await interaction.edit_original_response(content="✅ Game logged!", embed=None, view=None)
+        except Exception as e:
+            print(f"Failed to clear the ephemeral flow message: {e}")
 
 
 # ---------------------------------------------------------------------------

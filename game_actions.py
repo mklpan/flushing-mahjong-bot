@@ -4,6 +4,7 @@ commands and the button/modal UI, so scoring/validation/formatting all
 live in exactly one place.
 """
 
+import asyncio
 import csv
 import datetime
 import io
@@ -454,12 +455,17 @@ async def build_hall_of_fame_embed():
     lines = []
     for s in reversed(finished_seasons):  # most recent completed season first
         rows = await db.get_leaderboard(s["id"])
-        header = f"**Season {s['number']} — {s['name']}**"
         if not rows:
-            lines.append(f"{header}\n_no games logged_")
-        else:
-            top10 = rows[:10]
-            lines.append(header + "\n" + "\n".join(_format_leaderboard_lines(top10)))
+            continue  # skip empty seasons entirely (e.g. test seasons that were reset)
+        header = f"**Season {s['number']} — {s['name']}**"
+        top10 = rows[:10]
+        lines.append(header + "\n" + "\n".join(_format_leaderboard_lines(top10)))
+
+    if not lines:
+        embed.description = "No completed seasons with games yet."
+        embed.set_footer(text="Updates automatically")
+        return embed
+
     embed.description = "\n\n".join(lines)
     embed.set_footer(text="Updates automatically — a season appears here once it ends")
     embed.timestamp = datetime.datetime.now()
@@ -785,11 +791,15 @@ async def refresh_boards(client: discord.Client):
     """Refreshes every live board that's been set up: season leaderboard,
     lifetime leaderboard, hall of fame, and the season stats dashboard.
     Call this anywhere a game is logged, edited, or deleted, or a season
-    starts/ends."""
-    await update_live_leaderboard(client)
-    await update_live_lifetime_leaderboard(client)
-    await update_live_hall_of_fame(client)
-    await update_live_season_dashboard(client)
+    starts/ends. Runs all four concurrently -- each is an independent
+    Discord API round-trip, so there's no reason to wait on them one at a
+    time."""
+    await asyncio.gather(
+        update_live_leaderboard(client),
+        update_live_lifetime_leaderboard(client),
+        update_live_hall_of_fame(client),
+        update_live_season_dashboard(client),
+    )
 
 
 # ---------------------------------------------------------------------------
